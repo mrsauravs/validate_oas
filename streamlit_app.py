@@ -6,6 +6,7 @@ import requests
 import os
 import logging
 import sys
+import urllib.parse  # <--- ADDED THIS IMPORT
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -59,7 +60,7 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (Fixed for Local SSH Overrides) ---
+# --- Git Logic (Fixed for Special Chars in Credentials) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones or pulls the repo depending on whether it exists."""
@@ -69,7 +70,12 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     # Construct Auth URL if token is provided
     if git_token and git_username and "https://" in repo_url:
         clean_url = repo_url.replace("https://", "")
-        auth_repo_url = f"https://{git_username}:{git_token}@{clean_url}"
+        
+        # URL Encode credentials to handle special chars like '@' in emails
+        safe_user = urllib.parse.quote(git_username, safe='')
+        safe_token = urllib.parse.quote(git_token, safe='')
+        
+        auth_repo_url = f"https://{safe_user}:{safe_token}@{clean_url}"
     else:
         auth_repo_url = repo_url
 
@@ -80,17 +86,20 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     if not repo_path.exists():
         logger.info(f"⬇️ Repo not found at {repo_dir}. Cloning from remote...")
         try:
+            # We intentionally mask the token in the log message for security
+            safe_log_url = repo_url.replace("https://", f"https://{git_username}:***@")
+            logger.info(f"Executing clone for: {safe_log_url}")
+            
             cmd = ["git"] + git_config_override + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
             subprocess.run(cmd, check=True, capture_output=True)
             logger.info("✅ Repo cloned successfully.")
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ Git clone failed. Check your URL and Token.")
-            logger.error(f"Error details: {e}")
+            # We don't print the full 'e' here to avoid leaking the token in logs again
             st.stop()
     else:
         logger.info(f"🔄 Repo exists at {repo_dir}. Pulling latest...")
         try:
-            # We also apply the override here, just in case the local config interferes with fetch
             cmd = ["git"] + git_config_override + ["-C", str(repo_path), "pull"]
             subprocess.run(cmd, check=True, capture_output=True)
             logger.info("✅ Repo updated successfully.")
