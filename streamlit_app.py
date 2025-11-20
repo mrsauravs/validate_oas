@@ -344,7 +344,7 @@ def main():
     if 'gemini_key' not in st.session_state: st.session_state.gemini_key = ""
     if 'git_user' not in st.session_state: st.session_state.git_user = ""
     if 'git_token' not in st.session_state: st.session_state.git_token = ""
-    if 'repo_url' not in st.session_state: st.session_state.repo_url = "https://github.com/alation/alation.git"
+    if 'repo_url' not in st.session_state: st.session_state.repo_url = ""
     
     if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-pro"
 
