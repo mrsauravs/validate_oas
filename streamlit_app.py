@@ -17,7 +17,7 @@ from google.genai import types
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.26",
+    page_title="ReadMe.io OpenAPI Spec Validator v1.0",
     page_icon="📘",
     layout="wide"
 )
@@ -346,13 +346,13 @@ def main():
     if 'git_token' not in st.session_state: st.session_state.git_token = ""
     if 'repo_url' not in st.session_state: st.session_state.repo_url = "https://github.com/alation/alation.git"
     
-    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.0-flash"
+    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-pro"
 
     readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password", help="Required for Upload or ReadMe Validation")
     
     with st.sidebar.expander("🤖 AI Configuration", expanded=True):
-        gemini_key = st.text_input("AI/Gemini API Key", key="gemini_key", type="password", help="Required for AI Analysis")
-        ai_model = st.text_input("Model Name", key="ai_model", help="e.g., gemini-2.0-flash or gemini-1.5-pro")
+        gemini_key = st.text_input("Gemini API Key", key="gemini_key", type="password", help="Required for AI Analysis")
+        ai_model = st.text_input("Model Name", key="ai_model", help="e.g., gemini-2.5-pro")
     
     st.sidebar.subheader("Git Repo Config")
     default_cloud_path = "./cloned_repo"
@@ -377,7 +377,7 @@ def main():
     paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io Manager v2.26")
+    st.title("🚀 ReadMe.io OpenAPI Spec Validator v1.0")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -444,7 +444,7 @@ def main():
                     st.markdown("### 🤖 AI Fix Suggestion")
                     st.markdown(analysis)
     elif st.session_state.logs and not gemini_key:
-        st.info("💡 Enter a Gemini/AI API Key in the sidebar to unlock error analysis.")
+        st.info("💡 Enter a Gemini API Key in the sidebar to unlock error analysis.")
 
     # --- MAIN ACTION LOGIC ---
     action = None
