@@ -12,10 +12,12 @@ import re
 import json
 import platform
 from pathlib import Path
+from google import genai
+from google.genai import types
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Spec Validator v1.0",
+    page_title="ReadMe.io OpenAPI Manager v2.26",
     page_icon="📘",
     layout="wide"
 )
@@ -26,16 +28,26 @@ if 'logs' not in st.session_state:
 
 # --- Custom Logging Handler for Streamlit ---
 class StreamlitLogHandler(logging.Handler):
-    def __init__(self, container):
+    def __init__(self, container, download_placeholder=None):
         super().__init__()
         self.container = container
+        self.download_placeholder = download_placeholder
 
     def emit(self, record):
         msg = self.format(record)
-        # Append to session state to persist across reruns (downloads)
         st.session_state.logs.append(msg)
-        # Update the UI container immediately
         self.container.code("\n".join(st.session_state.logs), language="text")
+        
+        # Update download button dynamically if placeholder exists
+        if self.download_placeholder:
+            unique_key = f"log_dl_rt_{len(st.session_state.logs)}"
+            self.download_placeholder.download_button(
+                label="📥 Download Log File",
+                data="\n".join(st.session_state.logs),
+                file_name="openapi_upload.log",
+                mime="text/plain",
+                key=unique_key
+            )
 
 # --- Helper Functions ---
 
@@ -72,39 +84,36 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- AI Analysis Logic ---
-def analyze_errors_with_gemini(log_content, gemini_key):
-    if not gemini_key:
+# --- AI Analysis Logic (Google Gen AI SDK) ---
+def analyze_errors_with_ai(log_content, api_key, model_name):
+    """Sends logs to Google Gen AI for analysis."""
+    if not api_key:
         return None
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={gemini_key}"
-    
-    prompt = f"""
-    You are an expert OpenAPI Validator. Analyze the following log output from a CI/CD pipeline. 
-    It contains errors from Swagger CLI, Redocly CLI, or ReadMe CLI.
-    
-    Identify the specific YAML errors (like trailing slashes, missing references, schema issues) 
-    and provide actionable solutions (code snippets) for the user to fix their OpenAPI YAML file.
-    
-    Keep it concise, professional, and use Markdown formatting.
-    
-    Logs:
-    {log_content}
-    """
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-    
     try:
-        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'})
-        if response.status_code == 200:
-            data = response.json()
-            return data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', "No analysis returned.")
-        else:
-            return f"Error calling Gemini API: {response.text}"
+        client = genai.Client(api_key=api_key)
+        
+        prompt = f"""
+        You are an expert OpenAPI Validator. Analyze the following log output from a CI/CD pipeline. 
+        It contains errors from Swagger CLI, Redocly CLI, or ReadMe CLI.
+        
+        Identify the specific YAML errors (like trailing slashes, missing references, schema issues) 
+        and provide actionable solutions (code snippets) for the user to fix their OpenAPI YAML file.
+        
+        Keep it concise, professional, and use Markdown formatting.
+        
+        Logs:
+        {log_content}
+        """
+        
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[prompt]
+        )
+        
+        return response.text
     except Exception as e:
-        return f"Exception calling Gemini: {e}"
+        return f"Exception calling AI: {e}"
 
 # --- Git Logic ---
 
@@ -319,6 +328,7 @@ def clear_credentials():
     st.session_state.git_user = ""
     st.session_state.git_token = ""
     st.session_state.gemini_key = ""
+    st.session_state.logs = []
 
 def clear_logs():
     """Clears the log history."""
@@ -334,10 +344,15 @@ def main():
     if 'gemini_key' not in st.session_state: st.session_state.gemini_key = ""
     if 'git_user' not in st.session_state: st.session_state.git_user = ""
     if 'git_token' not in st.session_state: st.session_state.git_token = ""
-    if 'repo_url' not in st.session_state: st.session_state.repo_url = ""
+    if 'repo_url' not in st.session_state: st.session_state.repo_url = "https://github.com/alation/alation.git"
+    
+    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.0-flash"
 
     readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password", help="Required for Upload or ReadMe Validation")
-    gemini_key = st.sidebar.text_input("Gemini API Key", key="gemini_key", type="password", help="Optional: For AI-powered error analysis")
+    
+    with st.sidebar.expander("🤖 AI Configuration", expanded=True):
+        gemini_key = st.text_input("AI/Gemini API Key", key="gemini_key", type="password", help="Required for AI Analysis")
+        ai_model = st.text_input("Model Name", key="ai_model", help="e.g., gemini-2.0-flash or gemini-1.5-pro")
     
     st.sidebar.subheader("Git Repo Config")
     default_cloud_path = "./cloned_repo"
@@ -362,7 +377,7 @@ def main():
     paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io OpenAPI Spec Validator v1.0")
+    st.title("🚀 ReadMe.io Manager v2.26")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -398,17 +413,16 @@ def main():
     # --- PERSISTENT LOG DISPLAY ---
     st.markdown("### 📜 Execution Logs")
     
-    # Log container that is ALWAYS visible if logs exist
     log_container = st.empty()
     if st.session_state.logs:
         log_container.code("\n".join(st.session_state.logs), language="text")
 
-    # Download & Clear Buttons
     col_d1, col_d2 = st.columns([1, 4])
     with col_d1:
+        download_placeholder = st.empty()
         if st.session_state.logs:
-            unique_key = f"dl_btn_{len(st.session_state.logs)}"
-            st.download_button(
+            unique_key = f"dl_btn_persist_{len(st.session_state.logs)}"
+            download_placeholder.download_button(
                 label="📥 Download Log File",
                 data="\n".join(st.session_state.logs),
                 file_name="openapi_upload.log",
@@ -419,17 +433,18 @@ def main():
         if st.session_state.logs:
              st.button("🗑️ Clear Logs", on_click=clear_logs)
 
-    # AI Analysis Section (Always visible if logs exist)
+    # AI Analysis Section (Using Google Gen AI SDK)
     if st.session_state.logs and gemini_key:
-        if st.button("🤖 Analyze Logs with Gemini AI"):
+        if st.button(f"🤖 Analyze Logs with {ai_model}"):
             with st.spinner("Analyzing errors..."):
                 log_text = "\n".join(st.session_state.logs)
-                analysis = analyze_errors_with_gemini(log_text, gemini_key)
+                # Use the new SDK logic
+                analysis = analyze_errors_with_ai(log_text, gemini_key, ai_model)
                 if analysis:
                     st.markdown("### 🤖 AI Fix Suggestion")
                     st.markdown(analysis)
     elif st.session_state.logs and not gemini_key:
-        st.info("💡 Enter a Gemini API Key in the sidebar to unlock AI error analysis.")
+        st.info("💡 Enter a Gemini/AI API Key in the sidebar to unlock error analysis.")
 
     # --- MAIN ACTION LOGIC ---
     action = None
@@ -440,19 +455,16 @@ def main():
     elif btn_upload: action = 'upload'
 
     if action:
-        # Clear old logs at start of NEW run
-        st.session_state.logs = []
+        st.session_state.logs = [] # Clear old logs
         
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
         
-        # Handler updates session_state.logs AND the container
-        handler = StreamlitLogHandler(log_container)
+        handler = StreamlitLogHandler(log_container, download_placeholder)
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
-        req_key_for_action = True if action in ['readme', 'all', 'upload'] else False
         strict_key_req = True if action == 'upload' else False
         has_key = validate_env(readme_key, required=strict_key_req)
         
@@ -497,7 +509,6 @@ def main():
             st.error("Validation Failed.")
             if action == 'upload':
                 st.error("Aborting upload due to validation errors.")
-            # Do NOT st.stop() here if we want to allow the user to see the "Analyze with AI" button below
         else:
             logger.info("✅ Selected validations passed.")
 
