@@ -59,7 +59,7 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (Updated for Cloud) ---
+# --- Git Logic (Fixed for Local SSH Overrides) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones or pulls the repo depending on whether it exists."""
@@ -73,28 +73,42 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     else:
         auth_repo_url = repo_url
 
+    # Config flag to ignore local SSH overrides
+    # This prevents 'https://' from being converted to 'git@'
+    git_config_override = ["-c", "url.https://github.com/.insteadOf="]
+
     if not repo_path.exists():
         logger.info(f"⬇️ Repo not found at {repo_dir}. Cloning from remote...")
         try:
-            # Clone only the necessary depth to save space/time
-            subprocess.run(
-                ["git", "clone", "--depth", "1", auth_repo_url, str(repo_path)],
-                check=True,
-                capture_output=True
-            )
+            cmd = ["git"] + git_config_override + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
+            subprocess.run(cmd, check=True, capture_output=True)
             logger.info("✅ Repo cloned successfully.")
         except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Git clone failed. Check your URL and Token. Error: {e}")
+            logger.error(f"❌ Git clone failed. Check your URL and Token.")
+            logger.error(f"Error details: {e}")
             st.stop()
     else:
         logger.info(f"🔄 Repo exists at {repo_dir}. Pulling latest...")
         try:
-            subprocess.run(["git", "-C", str(repo_path), "pull"], check=True, capture_output=True)
+            # We also apply the override here, just in case the local config interferes with fetch
+            cmd = ["git"] + git_config_override + ["-C", str(repo_path), "pull"]
+            subprocess.run(cmd, check=True, capture_output=True)
             logger.info("✅ Repo updated successfully.")
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ Git pull failed: {e}")
-            # Don't stop here, maybe the local version is fine
-            
+            logger.warning("⚠️ Continuing with existing files (local version might be old).")
+
+def delete_repo(repo_dir):
+    """Deletes the repo directory to allow a fresh clone."""
+    path = Path(repo_dir)
+    if path.exists():
+        try:
+            shutil.rmtree(path)
+            return True, "Deleted successfully."
+        except Exception as e:
+            return False, f"Error deleting: {e}"
+    return False, "Path does not exist."
+
 # --- File Operations ---
 
 def prepare_files(filename, paths, workspace, logger):
@@ -231,26 +245,31 @@ def main():
     
     # 2. Git Configuration
     st.sidebar.subheader("Git Repo Config")
-    # Default to local dev path if on laptop, else default to ./repo for cloud
+    
     default_local_path = str(Path.home() / "Developer" / "alation")
     default_cloud_path = "./cloned_repo"
     
     is_cloud = not Path(default_local_path).exists()
     repo_dir_default = default_cloud_path if is_cloud else default_local_path
 
-    repo_url = st.sidebar.text_input("Git Repo URL", value="https://github.com/alation/alation.git") # Update with real URL
+    repo_url = st.sidebar.text_input("Git Repo URL", value="https://github.com/alation/alation.git")
     repo_path = st.sidebar.text_input("Local Clone Path", value=repo_dir_default)
     
-    # Git Auth (Only needed for Cloud/Private Repos)
+    # Add Reset Button
+    if st.sidebar.button("🗑️ Reset / Delete Cloned Repo"):
+        success, msg = delete_repo(repo_path)
+        if success:
+            st.sidebar.success(msg)
+        else:
+            st.sidebar.warning(msg)
+    
     git_user = st.sidebar.text_input("Git Username (for cloning)", value=secrets.get("GIT_USERNAME", ""))
     git_token = st.sidebar.text_input("Git Token/PAT (for cloning)", value=secrets.get("GIT_TOKEN", ""), type="password")
 
     # 3. Path Mapping
     st.sidebar.subheader("Internal Paths")
-    # Relative paths from the repo root
     spec_rel_path = st.sidebar.text_input("Specs Path (relative to repo)", value="django/static/swagger/specs")
     
-    # Calculate absolute paths based on where the repo is (or will be)
     abs_spec_path = Path(repo_path) / spec_rel_path
     abs_logical_path = abs_spec_path / "logical_metadata"
     
@@ -266,14 +285,13 @@ def main():
     st.title("🚀 ReadMe.io OAS Uploader")
     
     if is_cloud:
-        st.info("☁️ Detected Cloud Environment. Repository will be cloned to: " + repo_path)
+        st.info("☁️ Detected Cloud Environment.")
     else:
-        st.success(f"💻 Detected Local Environment. Using path: {repo_path}")
+        st.success(f"💻 Detected Local Environment.")
 
     col1, col2 = st.columns(2)
     
     with col1:
-        # Try to list files if repo already exists
         files = []
         if abs_spec_path.exists():
             files = [f.stem for f in abs_spec_path.glob("*.yaml")]
@@ -284,19 +302,18 @@ def main():
             selected_file = st.selectbox("Select OpenAPI File", files)
         else:
             selected_file = st.text_input("Enter Filename (e.g. 'audit')", "audit")
-            st.caption("ℹ️ File list will appear after first run (once repo is cloned).")
+            if not abs_spec_path.exists():
+                st.warning(f"⚠️ Repo not synced yet. Click 'Start Process' to clone.")
 
     with col2:
         version = st.text_input("API Version", "1.0")
 
-    # Validation Options
     st.subheader("✅ Validation Settings")
     c1, c2, c3 = st.columns(3)
     run_swagger = c1.checkbox("Swagger CLI", value=False)
     run_redocly = c2.checkbox("Redocly CLI", value=True)
     run_readme = c3.checkbox("ReadMe CLI", value=True)
 
-    # Actions
     st.subheader("🚀 Run")
     dry_run = st.checkbox("Dry Run (Validate Only)", value=True)
     start_btn = st.button("Start Process", type="primary")
@@ -359,7 +376,6 @@ def main():
         else:
             logger.info("🚀 Uploading to ReadMe...")
             
-            # Get ID to update existing doc instead of creating new
             with open(edited_file, "r") as f:
                 title = yaml.safe_load(f).get("info", {}).get("title", "")
                 
