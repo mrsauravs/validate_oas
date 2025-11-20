@@ -26,7 +26,6 @@ class StreamlitLogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         self.logs.append(msg)
-        # Update the container with the latest logs
         self.container.code("\n".join(self.logs), language="text")
 
 # --- Helper Functions ---
@@ -60,25 +59,47 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Main Logic Functions (Refactored for Streamlit) ---
+# --- Git Logic (Updated for Cloud) ---
 
-def pull_latest_repo(repo_path, logger):
-    logger.info(f"⬇️ Pulling latest changes from: {repo_path}")
-    if not os.path.exists(repo_path):
-        logger.error(f"❌ Repo path does not exist: {repo_path}")
-        st.stop()
+def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
+    """Clones or pulls the repo depending on whether it exists."""
     
-    try:
-        subprocess.run(["git", "-C", str(repo_path), "pull"], check=True, capture_output=True)
-        logger.info("✅ Repo updated successfully.")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Git pull failed: {e}")
-        st.stop()
+    repo_path = Path(repo_dir)
+    
+    # Construct Auth URL if token is provided
+    if git_token and git_username and "https://" in repo_url:
+        clean_url = repo_url.replace("https://", "")
+        auth_repo_url = f"https://{git_username}:{git_token}@{clean_url}"
+    else:
+        auth_repo_url = repo_url
+
+    if not repo_path.exists():
+        logger.info(f"⬇️ Repo not found at {repo_dir}. Cloning from remote...")
+        try:
+            # Clone only the necessary depth to save space/time
+            subprocess.run(
+                ["git", "clone", "--depth", "1", auth_repo_url, str(repo_path)],
+                check=True,
+                capture_output=True
+            )
+            logger.info("✅ Repo cloned successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ Git clone failed. Check your URL and Token. Error: {e}")
+            st.stop()
+    else:
+        logger.info(f"🔄 Repo exists at {repo_dir}. Pulling latest...")
+        try:
+            subprocess.run(["git", "-C", str(repo_path), "pull"], check=True, capture_output=True)
+            logger.info("✅ Repo updated successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ Git pull failed: {e}")
+            # Don't stop here, maybe the local version is fine
+            
+# --- File Operations ---
 
 def prepare_files(filename, paths, workspace, logger):
-    """Copies necessary files to a workspace to avoid messing up the main repo."""
+    """Copies necessary files to a workspace."""
     
-    # Define source paths based on config
     if filename in ["field", "field_value"]:
         source = Path(paths['logical']) / f"{filename}.yaml"
     else:
@@ -86,9 +107,9 @@ def prepare_files(filename, paths, workspace, logger):
 
     if not source.exists():
         logger.error(f"❌ Source file not found: {source}")
+        logger.info(f"ℹ️ Searched in: {source.parent}")
         st.stop()
 
-    # Create workspace
     workspace_path = Path(workspace)
     workspace_path.mkdir(parents=True, exist_ok=True)
     
@@ -96,7 +117,6 @@ def prepare_files(filename, paths, workspace, logger):
     shutil.copy(source, destination)
     logger.info(f"📂 Copied main YAML to workspace: {destination.name}")
 
-    # Copy dependencies (common, data_products)
     for folder in ["common", "data_products"]:
         src_folder = Path(paths['specs']) / folder
         dest_folder = workspace_path / folder
@@ -110,6 +130,8 @@ def prepare_files(filename, paths, workspace, logger):
             logger.warning(f"⚠️ Dependency folder not found: {src_folder}")
 
     return destination
+
+# --- ReadMe API Logic ---
 
 def check_and_create_version(version, api_key, base_url, logger):
     headers = {
@@ -150,28 +172,23 @@ def process_yaml_content(file_path, version, logger):
         with open(file_path, "r") as f:
             data = yaml.safe_load(f)
 
-        # Insert x-readme extension
         if "openapi" in data:
             pos = list(data.keys()).index("openapi")
             items = list(data.items())
             items.insert(pos + 1, ("x-readme", {"explorer-enabled": False}))
             data = dict(items)
         
-        # Update Info
         data["info"]["version"] = version
         
-        # Ensure servers block exists
         if "servers" not in data or not data["servers"]:
             data["servers"] = [{"url": "https://alation_domain", "variables": {}}]
 
-        # Update Server Variables safely
         if "variables" not in data["servers"][0]:
             data["servers"][0]["variables"] = {}
             
         data["servers"][0]["variables"]["base-url"] = {"default": "alation_domain"}
         data["servers"][0]["variables"]["protocol"] = {"default": "https"}
 
-        # Save edited file
         edited_path = file_path.parent / (file_path.stem + "_edited.yaml")
         with open(edited_path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
@@ -192,64 +209,82 @@ def get_api_id(api_name, version, api_key, base_url, logger):
     
     try:
         response = requests.get(f"{base_url}/api-specification", headers=headers, params={"perPage": 100})
-        if response.status_code != 200:
-            logger.error("❌ Error retrieving API specs list.")
-            return None
-
-        for api in response.json():
-            if api["title"] == api_name:
-                return api["_id"]
+        if response.status_code == 200:
+            for api in response.json():
+                if api["title"] == api_name:
+                    return api["_id"]
     except Exception:
         pass
-    
-    logger.warning(f"⚠️ No existing API ID found for title '{api_name}'. A new one will be created.")
     return None
 
 # --- UI Layout ---
 
 def main():
-    # 1. Sidebar Configuration
-    st.sidebar.title("⚙️ Settings")
+    st.sidebar.title("⚙️ Configuration")
     
-    # Try to load defaults from .env
+    # Load secrets
     load_dotenv()
-    default_key = os.getenv("README_API_KEY", "")
-    default_home = str(Path.home() / "Developer" / "alation")
+    secrets = st.secrets if os.path.exists(".streamlit/secrets.toml") else {}
     
-    api_key = st.sidebar.text_input("ReadMe API Key", value=default_key, type="password")
-    repo_path = st.sidebar.text_input("Alation Repo Path", value=default_home)
+    # 1. ReadMe Credentials
+    readme_key = st.sidebar.text_input("ReadMe API Key", value=secrets.get("README_API_KEY", os.getenv("README_API_KEY", "")), type="password")
     
-    # Derived defaults
-    default_specs = str(Path(repo_path) / "django" / "static" / "swagger" / "specs")
-    default_logical = str(Path(default_specs) / "logical_metadata")
+    # 2. Git Configuration
+    st.sidebar.subheader("Git Repo Config")
+    # Default to local dev path if on laptop, else default to ./repo for cloud
+    default_local_path = str(Path.home() / "Developer" / "alation")
+    default_cloud_path = "./cloned_repo"
     
-    specs_path = st.sidebar.text_input("Swagger Specs Path", value=default_specs)
-    logical_path = st.sidebar.text_input("Logical Metadata Path", value=default_logical)
+    is_cloud = not Path(default_local_path).exists()
+    repo_dir_default = default_cloud_path if is_cloud else default_local_path
+
+    repo_url = st.sidebar.text_input("Git Repo URL", value="https://github.com/alation/alation.git") # Update with real URL
+    repo_path = st.sidebar.text_input("Local Clone Path", value=repo_dir_default)
+    
+    # Git Auth (Only needed for Cloud/Private Repos)
+    git_user = st.sidebar.text_input("Git Username (for cloning)", value=secrets.get("GIT_USERNAME", ""))
+    git_token = st.sidebar.text_input("Git Token/PAT (for cloning)", value=secrets.get("GIT_TOKEN", ""), type="password")
+
+    # 3. Path Mapping
+    st.sidebar.subheader("Internal Paths")
+    # Relative paths from the repo root
+    spec_rel_path = st.sidebar.text_input("Specs Path (relative to repo)", value="django/static/swagger/specs")
+    
+    # Calculate absolute paths based on where the repo is (or will be)
+    abs_spec_path = Path(repo_path) / spec_rel_path
+    abs_logical_path = abs_spec_path / "logical_metadata"
     
     paths = {
         "repo": repo_path,
-        "specs": specs_path,
-        "logical": logical_path
+        "specs": abs_spec_path,
+        "logical": abs_logical_path
     }
     
-    workspace_dir = st.sidebar.text_input("Workspace Directory", value="./temp_workspace")
+    workspace_dir = "./temp_workspace"
 
-    # 2. Main Content
+    # Main Content
     st.title("🚀 ReadMe.io OAS Uploader")
-    st.markdown("Validate and upload OpenAPI specs with full **ReadMe compatibility checks**.")
+    
+    if is_cloud:
+        st.info("☁️ Detected Cloud Environment. Repository will be cloned to: " + repo_path)
+    else:
+        st.success(f"💻 Detected Local Environment. Using path: {repo_path}")
 
     col1, col2 = st.columns(2)
     
     with col1:
-        # Try to list files for better UX
-        try:
-            files = [f.stem for f in Path(specs_path).glob("*.yaml")]
-            # Add logical files
-            files += [f.stem for f in Path(logical_path).glob("*.yaml")]
+        # Try to list files if repo already exists
+        files = []
+        if abs_spec_path.exists():
+            files = [f.stem for f in abs_spec_path.glob("*.yaml")]
+            files += [f.stem for f in abs_logical_path.glob("*.yaml")]
             files = sorted(list(set(files)))
+        
+        if files:
             selected_file = st.selectbox("Select OpenAPI File", files)
-        except:
-            selected_file = st.text_input("Enter Filename (no extension)", "audit")
+        else:
+            selected_file = st.text_input("Enter Filename (e.g. 'audit')", "audit")
+            st.caption("ℹ️ File list will appear after first run (once repo is cloned).")
 
     with col2:
         version = st.text_input("API Version", "1.0")
@@ -257,121 +292,87 @@ def main():
     # Validation Options
     st.subheader("✅ Validation Settings")
     c1, c2, c3 = st.columns(3)
-    run_swagger = c1.checkbox("Swagger CLI (Legacy)", value=False)
-    run_redocly = c2.checkbox("Redocly CLI (OAS 3.1)", value=True)
-    run_readme = c3.checkbox("ReadMe CLI (Strict)", value=True)
+    run_swagger = c1.checkbox("Swagger CLI", value=False)
+    run_redocly = c2.checkbox("Redocly CLI", value=True)
+    run_readme = c3.checkbox("ReadMe CLI", value=True)
 
     # Actions
-    st.subheader("🚀 Actions")
-    use_local = st.checkbox("Use Local Files (Skip Git Pull)", value=False)
+    st.subheader("🚀 Run")
     dry_run = st.checkbox("Dry Run (Validate Only)", value=True)
-    
-    start_btn = st.button("Run Process", type="primary")
+    start_btn = st.button("Start Process", type="primary")
 
-    # Output Area
     log_container = st.empty()
     
     if start_btn:
-        # Initialize Logger
+        # Init Logger
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
-        # Clear old handlers to avoid duplicates
-        if logger.handlers:
-            logger.handlers = []
+        if logger.handlers: logger.handlers = []
         handler = StreamlitLogHandler(log_container)
-        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
-        handler.setFormatter(formatter)
+        handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
-        validate_env(api_key)
+        validate_env(readme_key)
         npx_path = get_npx_path()
-        
         if not npx_path:
-            logger.error("❌ NodeJS/npx not found. Please install Node.js.")
+            logger.error("❌ NodeJS/npx not found.")
             st.stop()
 
-        # Step 1: Git Pull
-        if not use_local:
-            pull_latest_repo(paths['repo'], logger)
-        else:
-            logger.info("⏭️ Skipping git pull (Local Mode).")
+        # Step 1: Git Clone/Pull
+        setup_git_repo(repo_url, repo_path, git_token, git_user, logger)
 
         # Step 2: Prepare Files
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
         # Step 3: Version Check
-        check_and_create_version(version, api_key, "https://dash.readme.com/api/v1", logger)
+        check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger)
 
         # Step 4: Edit YAML
         edited_file = process_yaml_content(final_yaml_path, version, logger)
 
         # Step 5: Validations
         validation_failed = False
-        
         if run_swagger:
             logger.info("🔍 Running Swagger CLI...")
-            code = run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger)
-            if code != 0: validation_failed = True
-
+            if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: validation_failed = True
+        
         if run_redocly:
             logger.info("🔍 Running Redocly CLI...")
-            code = run_command([npx_path, "--yes", "@redocly/cli", "lint", str(edited_file)], logger)
-            if code != 0: validation_failed = True
-
+            if run_command([npx_path, "--yes", "@redocly/cli", "lint", str(edited_file)], logger) != 0: validation_failed = True
+            
         if run_readme:
-            logger.info("🔍 Running ReadMe CLI (Compatibility Check)...")
-            # "openapi:validate" checks compatibility without uploading
-            code = run_command([npx_path, "--yes", "rdme", "openapi:validate", str(edited_file)], logger)
-            if code != 0: validation_failed = True
+            logger.info("🔍 Running ReadMe CLI...")
+            if run_command([npx_path, "--yes", "rdme", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
 
         if validation_failed:
-            if dry_run:
-                logger.error("❌ Validation failed. Fix errors before uploading.")
-                st.error("Validation failed!")
-            else:
-                logger.error("❌ Validation failed. Aborting upload.")
-                st.error("Validation failed! Upload aborted.")
-                st.stop()
+            logger.error("❌ Validation failed. Aborting upload.")
+            st.error("Validation failed!")
+            st.stop()
         else:
             logger.info("✅ All validations passed.")
 
         # Step 6: Upload
         if dry_run:
-            logger.info("🏁 Dry run complete. No files uploaded.")
-            st.success("Dry run completed successfully!")
+            logger.info("🏁 Dry run complete.")
+            st.success("Dry run completed!")
         else:
-            if validation_failed:
-                st.stop() # Double check
-                
-            logger.info("🚀 Starting Upload to ReadMe...")
+            logger.info("🚀 Uploading to ReadMe...")
             
-            # Get ID
+            # Get ID to update existing doc instead of creating new
             with open(edited_file, "r") as f:
-                data = yaml.safe_load(f)
-                api_title = data["info"]["title"]
+                title = yaml.safe_load(f).get("info", {}).get("title", "")
+                
+            api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
             
-            api_id = get_api_id(api_title, version, api_key, "https://dash.readme.com/api/v1", logger)
+            cmd = [npx_path, "rdme", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+            if api_id: cmd.extend(["--id", api_id])
             
-            # Construct RDME command
-            cmd = [
-                npx_path, "rdme", "openapi", str(edited_file),
-                "--useSpecVersion", 
-                "--key", api_key, 
-                "--version", version
-            ]
-            
-            if api_id:
-                cmd.extend(["--id", api_id])
-            
-            code = run_command(cmd, logger)
-            
-            if code == 0:
+            if run_command(cmd, logger) == 0:
                 logger.info("🎉 Upload Successful!")
-                st.success("Upload Complete!")
+                st.success("Done!")
             else:
                 logger.error("❌ Upload failed.")
-                st.error("Upload failed.")
 
 if __name__ == "__main__":
     main()
