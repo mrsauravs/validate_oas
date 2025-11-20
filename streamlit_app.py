@@ -6,13 +6,13 @@ import requests
 import os
 import logging
 import sys
-import urllib.parse  # <--- ADDED THIS IMPORT
+import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager",
+    page_title="ReadMe.io OpenAPI Manager v2.1",
     page_icon="📘",
     layout="wide"
 )
@@ -60,7 +60,7 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (Fixed for Special Chars in Credentials) ---
+# --- Git Logic (Fixed for Credentials & SSO) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones or pulls the repo depending on whether it exists."""
@@ -71,7 +71,7 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     if git_token and git_username and "https://" in repo_url:
         clean_url = repo_url.replace("https://", "")
         
-        # URL Encode credentials to handle special chars like '@' in emails
+        # URL Encode credentials to handle emails as usernames
         safe_user = urllib.parse.quote(git_username, safe='')
         safe_token = urllib.parse.quote(git_token, safe='')
         
@@ -80,22 +80,38 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
         auth_repo_url = repo_url
 
     # Config flag to ignore local SSH overrides
-    # This prevents 'https://' from being converted to 'git@'
     git_config_override = ["-c", "url.https://github.com/.insteadOf="]
 
     if not repo_path.exists():
         logger.info(f"⬇️ Repo not found at {repo_dir}. Cloning from remote...")
         try:
-            # We intentionally mask the token in the log message for security
+            # Intentionally mask logs
             safe_log_url = repo_url.replace("https://", f"https://{git_username}:***@")
             logger.info(f"Executing clone for: {safe_log_url}")
             
             cmd = ["git"] + git_config_override + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
-            subprocess.run(cmd, check=True, capture_output=True)
+            
+            # Run subprocess
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+                
             logger.info("✅ Repo cloned successfully.")
+            
         except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Git clone failed. Check your URL and Token.")
-            # We don't print the full 'e' here to avoid leaking the token in logs again
+            logger.error("❌ Git clone failed.")
+            
+            # Check for common error signatures
+            err_msg = e.stderr.lower() if e.stderr else ""
+            if "403" in err_msg:
+                st.error("🚨 Authentication Failed (403).")
+                st.info("👉 Solution: Your PAT might need **SSO Authorization**. Go to GitHub Settings > Tokens > Configure SSO > Authorize for Alation.")
+            elif "authentication failed" in err_msg:
+                st.error("🚨 Invalid Credentials.")
+                st.info("👉 Check that your Token is valid and has 'repo' scope.")
+            else:
+                st.error(f"Git Error: {e.stderr}")
             st.stop()
     else:
         logger.info(f"🔄 Repo exists at {repo_dir}. Pulling latest...")
@@ -272,8 +288,9 @@ def main():
         else:
             st.sidebar.warning(msg)
     
-    git_user = st.sidebar.text_input("Git Username (for cloning)", value=secrets.get("GIT_USERNAME", ""))
-    git_token = st.sidebar.text_input("Git Token/PAT (for cloning)", value=secrets.get("GIT_TOKEN", ""), type="password")
+    git_user = st.sidebar.text_input("Git Username", value=secrets.get("GIT_USERNAME", ""))
+    st.sidebar.caption("Use your GitHub Handle, NOT email (unless SSO requires it).")
+    git_token = st.sidebar.text_input("Git Token/PAT", value=secrets.get("GIT_TOKEN", ""), type="password")
 
     # 3. Path Mapping
     st.sidebar.subheader("Internal Paths")
@@ -291,7 +308,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io OAS Uploader")
+    st.title("🚀 ReadMe.io Manager v2.1")
+    st.markdown("Now handling SSO checks and URL encoding.")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
