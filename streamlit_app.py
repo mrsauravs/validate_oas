@@ -7,13 +7,13 @@ import os
 import logging
 import sys
 import urllib.parse
-import base64  # <--- New Import for Header Auth
+import base64
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.3",
+    page_title="ReadMe.io OpenAPI Manager v2.4",
     page_icon="📘",
     layout="wide"
 )
@@ -61,15 +61,22 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (Header-Based Auth) ---
+# --- Git Logic (v2.4 - Header Auth + Input Sanitization) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones or pulls the repo using Header-based authentication."""
+    
+    logger.info("🚀 Starting Git Operation (Logic v2.4 - Header Auth)...")
     
     repo_path = Path(repo_dir)
     repo_url = repo_url.strip()
     git_username = git_username.strip()
     git_token = git_token.strip()
+
+    # SANITIZATION: Fix double https:// error if present
+    if "https://https://" in repo_url:
+        logger.warning("⚠️ Detected double 'https://' in URL. Fixing automatically...")
+        repo_url = repo_url.replace("https://https://", "https://")
 
     # Config flags
     # 1. Disable 'insteadOf' to prevent SSH rewriting
@@ -122,6 +129,7 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             elif "not found" in err_msg:
                 st.error("🚨 Repo Not Found.")
                 st.error(f"Raw Error: {e.stderr}")
+                st.caption("Check if the URL above is correct and accessible.")
             else:
                 st.error(f"Git Error: {e.stderr}")
             st.stop()
@@ -321,8 +329,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.3")
-    st.markdown("Using Header Authentication to fix URL cloning issues.")
+    st.title("🚀 ReadMe.io Manager v2.4")
+    st.markdown("Logic v2.4: Header Auth + Input Sanitization")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
