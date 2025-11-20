@@ -9,9 +9,9 @@ import sys
 import urllib.parse
 import base64
 import re
+import json
 import platform
 from pathlib import Path
-# Note: We removed 'dotenv' loading to prevent accidental env var leakage in public apps
 
 # Page Config
 st.set_page_config(
@@ -50,10 +50,15 @@ class StreamlitLogHandler(logging.Handler):
 def get_npx_path():
     return shutil.which("npx")
 
-def validate_env(api_key):
+def validate_env(api_key, required=True):
+    """
+    Validates ReadMe API Key.
+    """
     if not api_key:
-        st.error("❌ README_API_KEY is missing. Please enter it in the sidebar.")
-        st.stop()
+        if required:
+            st.error("❌ ReadMe API Key is missing. Please enter it in the sidebar.")
+            st.stop()
+        return False
     return True
 
 def run_command(command_list, log_logger):
@@ -77,6 +82,41 @@ def run_command(command_list, log_logger):
     except Exception as e:
         log_logger.error(f"❌ Command failed: {e}")
         return 1
+
+# --- AI Analysis Logic ---
+def analyze_errors_with_gemini(log_content, gemini_key):
+    """Sends logs to Gemini for analysis."""
+    if not gemini_key:
+        return None
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+    
+    prompt = f"""
+    You are an expert OpenAPI Validator. Analyze the following log output from a CI/CD pipeline. 
+    It contains errors from Swagger CLI, Redocly CLI, or ReadMe CLI.
+    
+    Identify the specific YAML errors (like trailing slashes, missing references, schema issues) 
+    and provide actionable solutions (code snippets) for the user to fix their OpenAPI YAML file.
+    
+    Keep it concise, professional, and use Markdown formatting.
+    
+    Logs:
+    {log_content}
+    """
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers={'Content-Type': 'application/json'})
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', "No analysis returned.")
+        else:
+            return f"Error calling Gemini API: {response.text}"
+    except Exception as e:
+        return f"Exception calling Gemini: {e}"
 
 # --- Git Logic ---
 
@@ -209,22 +249,27 @@ def prepare_files(filename, paths, workspace, logger):
 
 # --- ReadMe API Logic ---
 
-def check_and_create_version(version, api_key, base_url, logger, dry_run=False):
+def check_and_create_version(version, api_key, base_url, logger, create_if_missing=False):
+    # If no key, skip entirely
+    if not api_key:
+        return
+
     headers = {"Authorization": f"Basic {api_key}", "Accept": "application/json"}
     logger.info(f"🔎 Checking version '{version}' on ReadMe...")
     try:
         response = requests.get(f"{base_url}/version", headers=headers)
         if response.status_code != 200:
             logger.error(f"❌ Failed to fetch versions: {response.text}")
-            st.stop()
+            # Don't stop validation flow just for this check
+            return
         
         versions = response.json()
         if any(v["version"] == version for v in versions):
             logger.info(f"✅ Version '{version}' exists.")
             return
 
-        if dry_run:
-            logger.warning(f"⚠️ Version '{version}' not found. Skipping creation (Dry Run).")
+        if not create_if_missing:
+            logger.warning(f"⚠️ Version '{version}' not found on ReadMe. (Skipping creation during validation).")
             return
 
         logger.info(f"⚠️ Version '{version}' not found. Creating it...")
@@ -236,10 +281,9 @@ def check_and_create_version(version, api_key, base_url, logger, dry_run=False):
             logger.info(f"✅ Version '{version}' created successfully.")
         else:
             logger.error(f"❌ Failed to create version: {create_response.text}")
-            st.stop()
+            # Don't stop main flow
     except Exception as e:
         logger.error(f"❌ Network error checking version: {e}")
-        st.stop()
 
 def process_yaml_content(file_path, version, logger):
     logger.info("🛠️ Injecting x-readme extensions and updating server info...")
@@ -273,6 +317,8 @@ def process_yaml_content(file_path, version, logger):
         st.stop()
 
 def get_api_id(api_name, version, api_key, base_url, logger):
+    if not api_key: return None
+    
     headers = {"Authorization": f"Basic {api_key}", "Accept": "application/json", "x-readme-version": version}
     try:
         response = requests.get(f"{base_url}/api-specification", headers=headers, params={"perPage": 100})
@@ -290,25 +336,22 @@ def clear_credentials():
     st.session_state.readme_key = ""
     st.session_state.git_user = ""
     st.session_state.git_token = ""
+    st.session_state.gemini_key = ""
 
 # --- UI Layout ---
 
 def main():
     st.sidebar.title("⚙️ Configuration")
     
-    # --- CREDENTIAL MANAGEMENT (Pure UI - No Secrets) ---
-    # Initialize Session State for inputs if not present
-    if 'readme_key' not in st.session_state:
-        st.session_state.readme_key = ""
-    if 'git_user' not in st.session_state:
-        st.session_state.git_user = ""
-    if 'git_token' not in st.session_state:
-        st.session_state.git_token = ""
-    if 'repo_url' not in st.session_state:
-        st.session_state.repo_url = "https://github.com/alation/alation.git"
+    # --- CREDENTIAL MANAGEMENT ---
+    if 'readme_key' not in st.session_state: st.session_state.readme_key = ""
+    if 'gemini_key' not in st.session_state: st.session_state.gemini_key = ""
+    if 'git_user' not in st.session_state: st.session_state.git_user = ""
+    if 'git_token' not in st.session_state: st.session_state.git_token = ""
+    if 'repo_url' not in st.session_state: st.session_state.repo_url = ""
 
-    # Input fields bound to session state
-    readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password", help="Enter your ReadMe project API key")
+    readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password", help="Required for Upload or ReadMe Validation")
+    gemini_key = st.sidebar.text_input("Gemini API Key", key="gemini_key", type="password", help="Optional: For AI-powered error analysis")
     
     st.sidebar.subheader("Git Repo Config")
     default_cloud_path = "./cloned_repo"
@@ -319,12 +362,10 @@ def main():
         if success: st.sidebar.success(msg)
         else: st.sidebar.warning(msg)
     
-    # Sensitive Git Inputs (Masked)
     repo_url = st.sidebar.text_input("Git Repo URL", key="repo_url")
-    git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle (e.g. user-name-company)")
-    git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token with 'repo' scope")
+    git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle")
+    git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token")
 
-    # Clear Credentials Button
     st.sidebar.button("🔒 Clear Credentials", on_click=clear_credentials)
 
     st.sidebar.subheader("Internal Paths")
@@ -336,7 +377,6 @@ def main():
     workspace_dir = "./temp_workspace"
 
     st.title("🚀 ReadMe.io OpenAPI Spec Validator v1.0")
-    st.markdown("Public Mode: Credentials must be entered manually.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -356,29 +396,56 @@ def main():
     with col2:
         version = st.text_input("API Version", "1.0")
 
-    st.subheader("✅ Validation Settings")
+    st.markdown("### 🚀 Actions")
+    
+    # Action Buttons
     c1, c2, c3 = st.columns(3)
-    run_swagger = c1.checkbox("Swagger CLI", value=False)
-    run_redocly = c2.checkbox("Redocly CLI", value=True)
-    run_readme = c3.checkbox("ReadMe CLI", value=True)
-
-    st.subheader("🚀 Run")
-    dry_run = st.checkbox("Dry Run (Validate Only)", value=True)
-    start_btn = st.button("Start Process", type="primary")
+    btn_swagger = c1.button("Validate Swagger CLI", use_container_width=True)
+    btn_redocly = c2.button("Validate Redocly CLI", use_container_width=True)
+    btn_readme = c3.button("Validate ReadMe CLI", use_container_width=True, help="Requires ReadMe API Key")
+    
+    st.markdown("---")
+    
+    c4, c5 = st.columns(2)
+    btn_validate_all = c4.button("🔍 Validate All", use_container_width=True)
+    btn_upload = c5.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Validates all and uploads if successful")
 
     log_container = st.empty()
+    ai_output_container = st.container() # Container for AI Analysis
     download_placeholder = st.empty()
     
-    if start_btn:
+    # Determine Action State
+    action = None
+    if btn_swagger: action = 'swagger'
+    elif btn_redocly: action = 'redocly'
+    elif btn_readme: action = 'readme'
+    elif btn_validate_all: action = 'all'
+    elif btn_upload: action = 'upload'
+
+    if action:
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
         
+        # Pass both placeholders
         handler = StreamlitLogHandler(log_container, download_placeholder)
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
-        validate_env(readme_key)
+        # --- PRE-FLIGHT CHECKS ---
+        # ReadMe/Upload/All require Key? 
+        # Validate All -> ReadMe Key needed for 3rd step.
+        # Upload -> ReadMe Key needed.
+        # ReadMe CLI -> ReadMe Key needed.
+        
+        req_key_for_action = True if action in ['readme', 'all', 'upload'] else False
+        
+        # If 'Validate All' is clicked but no key, we can still run Swagger/Redocly and just warn about ReadMe
+        # But if 'Upload' is clicked, we strictly fail.
+        strict_key_req = True if action == 'upload' else False
+        
+        has_key = validate_env(readme_key, required=strict_key_req)
+        
         npx_path = get_npx_path()
         if not npx_path:
             logger.error("❌ NodeJS/npx not found.")
@@ -389,41 +456,70 @@ def main():
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
-        check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, dry_run=dry_run)
+        if has_key:
+            create_ver = True if action == 'upload' else False
+            check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=create_ver)
 
         edited_file = process_yaml_content(final_yaml_path, version, logger)
 
         validation_failed = False
-        if run_swagger:
-            logger.info("🔍 Running Swagger CLI...")
-            if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: validation_failed = True
         
-        if run_redocly:
+        # --- VALIDATION PIPELINE ---
+        
+        # 1. Swagger
+        if action in ['swagger', 'all', 'upload']:
+            logger.info("🔍 Running Swagger CLI...")
+            if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: 
+                validation_failed = True
+        
+        # 2. Redocly
+        if action in ['redocly', 'all', 'upload']:
             logger.info("🔍 Running Redocly CLI (Pinned v1.25.0)...")
-            if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: validation_failed = True
+            if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: 
+                validation_failed = True
             
-        if run_readme:
-            # FIX: Use major version 8 which is compatible with Node 18
-            logger.info("🔍 Running ReadMe CLI (Pinned v8)...")
-            if run_command([npx_path, "--yes", "rdme@8", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
+        # 3. ReadMe
+        if action in ['readme', 'all', 'upload']:
+            if has_key:
+                logger.info("🔍 Running ReadMe CLI (Pinned v8)...")
+                if run_command([npx_path, "--yes", "rdme@8", "openapi:validate", str(edited_file), "--key", readme_key], logger) != 0: 
+                    validation_failed = True
+            else:
+                logger.warning("⚠️ Skipping ReadMe CLI validation (No API Key provided).")
 
+        # --- POST-VALIDATION DECISION ---
+        
         if validation_failed:
-            logger.error("❌ Validation failed. Aborting upload.")
-            st.error("Validation failed!")
+            logger.error("❌ Validation failed.")
+            st.error("Validation Failed.")
+            
+            # --- AI ANALYSIS ---
+            if gemini_key:
+                with ai_output_container:
+                    st.info("🤖 Analyzing errors with Gemini...")
+                    # Reconstruct log text from handler
+                    log_text = "\n".join(handler.logs)
+                    analysis = analyze_errors_with_gemini(log_text, gemini_key)
+                    if analysis:
+                        st.markdown("### 🤖 AI Fix Suggestion")
+                        st.markdown(analysis)
+            elif not gemini_key and action in ['all', 'upload']:
+                 st.caption("💡 Tip: Enter a Gemini API Key in the sidebar to get automatic fix suggestions.")
+            
+            if action == 'upload':
+                st.error("Aborting upload due to validation errors.")
+            
             st.stop()
         else:
-            logger.info("✅ All validations passed.")
+            logger.info("✅ Selected validations passed.")
 
-        if dry_run:
-            logger.info("🏁 Dry run complete.")
-            st.success("Dry run completed!")
-        else:
+        # --- UPLOAD STEP ---
+        if action == 'upload':
             logger.info("🚀 Uploading to ReadMe...")
             with open(edited_file, "r") as f:
                 title = yaml.safe_load(f).get("info", {}).get("title", "")
             
             api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
-            # FIX: Use major version 8 for upload as well
             cmd = [npx_path, "--yes", "rdme@8", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
             if api_id: cmd.extend(["--id", api_id])
             
@@ -432,6 +528,9 @@ def main():
                 st.success("Done!")
             else:
                 logger.error("❌ Upload failed.")
+        else:
+            if not validation_failed:
+                st.success("Validation Check Complete.")
 
 if __name__ == "__main__":
     main()
