@@ -367,8 +367,8 @@ def main():
     
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io Manager v2.14")
-    st.markdown("Logic v2.14: Fixed CLI version targets")
+    st.title("🚀 OAS Validator v1.0")
+    st.markdown("")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
