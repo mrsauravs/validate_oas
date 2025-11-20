@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Spec Validator v1.0",
+    page_title="ReadMe.io OAS Validator",
     page_icon="📘",
     layout="wide"
 )
@@ -284,6 +284,13 @@ def get_api_id(api_name, version, api_key, base_url, logger):
         pass
     return None
 
+# --- CALLBACK FUNCTION ---
+def clear_credentials():
+    """Clears session state variables. Triggered by button click."""
+    st.session_state.readme_key = ""
+    st.session_state.git_user = ""
+    st.session_state.git_token = ""
+
 # --- UI Layout ---
 
 def main():
@@ -300,7 +307,7 @@ def main():
     if 'repo_url' not in st.session_state:
         st.session_state.repo_url = "https://github.com/alation/alation.git"
 
-    # Input fields bound to session state (allows clearing)
+    # Input fields bound to session state
     readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password", help="Enter your ReadMe project API key")
     
     st.sidebar.subheader("Git Repo Config")
@@ -317,12 +324,8 @@ def main():
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle (e.g. user-name-company)")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token with 'repo' scope")
 
-    # Clear Credentials Button
-    if st.sidebar.button("🔒 Clear Credentials"):
-        st.session_state.readme_key = ""
-        st.session_state.git_user = ""
-        st.session_state.git_token = ""
-        st.rerun()
+    # Clear Credentials Button - Uses Callback to avoid Duplicate Key Errors
+    st.sidebar.button("🔒 Clear Credentials", on_click=clear_credentials)
 
     st.sidebar.subheader("Internal Paths")
     spec_rel_path = st.sidebar.text_input("Specs Path (relative to repo)", value="django/static/swagger/specs")
@@ -332,7 +335,7 @@ def main():
     paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io OpenAPI Spec Validator")
+    st.title("🚀 ReadMe.io OAS Validator")
     st.markdown("Public Mode: Credentials must be entered manually.")
     
     col1, col2 = st.columns(2)
