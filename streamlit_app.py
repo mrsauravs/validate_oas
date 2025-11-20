@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.7",
+    page_title="ReadMe.io OpenAPI Manager v2.9",
     page_icon="📘",
     layout="wide"
 )
@@ -63,89 +63,61 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (v2.7 - Debug & Embedded Auth) ---
+# --- Git Logic (v2.8 - SSO Detection + v2.7 Auth) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
-    """Clones/Pulls repo with debug logging and sanitized inputs."""
+    """Clones/Pulls repo with specific handling for SAML SSO errors."""
     
-    logger.info("🚀 Starting Git Operation (Logic v2.7 - Embedded Auth)...")
+    logger.info("🚀 Starting Git Operation...")
     
-    # 1. Input Sanitization (Strip accidental quotes/spaces)
     repo_path = Path(repo_dir)
     repo_url = repo_url.strip().strip('"').strip("'")
     git_username = git_username.strip().strip('"').strip("'")
     git_token = git_token.strip().strip('"').strip("'")
 
-    # 2. Fix double https:// if present
+    # 1. Fix double https://
     if repo_url.count("https://") > 1:
         match = re.search(r"(https://github\.com/.*)$", repo_url)
         if match:
             repo_url = match.group(1)
-            logger.info(f"🔧 Fixed URL input to: {repo_url}")
 
-    # 3. Construct Authenticated URL (The Robust Way)
-    # We use urllib to safely inject credentials into the URL
+    # 2. Construct Authenticated URL
     try:
-        # Parse the raw URL
         parsed = urllib.parse.urlparse(repo_url)
-        
-        # URL-Encode the username and token (Critical for special chars)
         safe_user = urllib.parse.quote(git_username, safe='')
         safe_token = urllib.parse.quote(git_token, safe='')
         
-        # Construct netloc: user:token@github.com
         if "@" in parsed.netloc:
-            # Remove existing auth if present
             clean_netloc = parsed.netloc.split("@")[-1]
         else:
             clean_netloc = parsed.netloc
 
         auth_netloc = f"{safe_user}:{safe_token}@{clean_netloc}"
         
-        # Rebuild full URL
         auth_repo_url = urllib.parse.urlunparse((
-            parsed.scheme, 
-            auth_netloc, 
-            parsed.path, 
-            parsed.params, 
-            parsed.query, 
-            parsed.fragment
+            parsed.scheme, auth_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
         ))
         
-        # Create a masked version for logging (hide token)
         masked_netloc = f"{safe_user}:***@{clean_netloc}"
         masked_repo_url = urllib.parse.urlunparse((
-            parsed.scheme, 
-            masked_netloc, 
-            parsed.path, 
-            parsed.params, 
-            parsed.query, 
-            parsed.fragment
+            parsed.scheme, masked_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
         ))
         
     except Exception as e:
         logger.error(f"❌ URL Construction Failed: {e}")
         st.stop()
 
-    # 4. Environment Setup (Ignore local configs)
+    # 3. Env Setup
     clean_env = os.environ.copy()
     null_path = "NUL" if platform.system() == "Windows" else "/dev/null"
     clean_env["GIT_CONFIG_GLOBAL"] = null_path
     clean_env["GIT_CONFIG_SYSTEM"] = null_path
-    # Disable terminal prompts
     clean_env["GIT_TERMINAL_PROMPT"] = "0"
-
-    # 5. Debug: Print Git Config (To see what's wrong)
-    logger.info("🧐 Debug: Checking active Git Config...")
-    try:
-        subprocess.run(["git", "config", "--list", "--show-origin"], check=False, capture_output=False) # Logs to stdout
-    except:
-        pass
 
     if not repo_path.exists():
         logger.info(f"⬇️ Cloning from: {masked_repo_url}")
         
-        # Reset Config Flags (No header auth, just basic URL auth)
+        # Basic clone (no headers, relies on URL auth)
         git_args = ["-c", "core.askPass=echo"] 
         
         try:
@@ -154,20 +126,24 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             result = subprocess.run(cmd, capture_output=True, text=True, env=clean_env)
             
             if result.returncode != 0:
-                # Log the raw error for debugging
-                logger.error(f"❌ Git Output:\n{result.stderr}")
+                # --- SSO ERROR DETECTION ---
+                sso_match = re.search(r"(https://github\.com/orgs/[^/]+/sso\?authorization_request=[^\s]+)", result.stderr)
                 
-                if "403" in result.stderr or "not found" in result.stderr.lower():
-                    st.error("🚨 Authentication Failed.")
-                    st.warning("Possible Causes:")
-                    st.markdown("""
-                    1. **SSO Required:** Use the 'Configure SSO' button on your GitHub Token settings.
-                    2. **Invalid Token:** Regenerate your PAT.
-                    3. **Wrong Scope:** Ensure 'repo' scope is checked.
-                    4. **Private Repo:** If the repo is private, 'Not Found' means Access Denied.
-                    """)
+                if sso_match:
+                    sso_url = sso_match.group(1)
+                    logger.error("❌ SSO AUTHORIZATION REQUIRED")
+                    st.error("🚨 Organization requires SAML SSO Authorization.")
+                    st.markdown(f"👉 **[Click here to Authorize your Token]({sso_url})**")
+                    st.caption("After authorizing, click 'Start Process' again.")
                     st.stop()
+                
+                elif "403" in result.stderr:
+                    st.error("🚨 Authentication Failed (403).")
+                    st.info("Ensure your Token has 'repo' scope and SSO is configured.")
+                    st.stop()
+                
                 else:
+                    logger.error(f"❌ Git Output:\n{result.stderr}")
                     st.error("Git Clone Failed.")
                     st.stop()
             
@@ -179,7 +155,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     else:
         logger.info(f"🔄 Pulling latest changes...")
         try:
-            # Update remote URL with new credentials just in case they changed
             subprocess.run(["git", "-C", str(repo_path), "remote", "set-url", "origin", auth_repo_url], 
                          check=True, capture_output=True, env=clean_env)
             
@@ -239,7 +214,7 @@ def prepare_files(filename, paths, workspace, logger):
 
 # --- ReadMe API Logic ---
 
-def check_and_create_version(version, api_key, base_url, logger):
+def check_and_create_version(version, api_key, base_url, logger, dry_run=False):
     headers = {
         "Authorization": f"Basic {api_key}",
         "Accept": "application/json"
@@ -257,8 +232,24 @@ def check_and_create_version(version, api_key, base_url, logger):
             logger.info(f"✅ Version '{version}' exists.")
             return
 
+        # Version does not exist
+        if dry_run:
+            logger.warning(f"⚠️ Version '{version}' not found. Skipping creation (Dry Run).")
+            logger.info(f"ℹ️ The validation will proceed assuming '{version}' will be created later.")
+            return
+
+        # If NOT dry run, try to create it
         logger.info(f"⚠️ Version '{version}' not found. Creating it...")
-        payload = {"version": version, "is_stable": False, "from": "latest"}
+        
+        # FIND BEST FORK TARGET (Don't assume 'latest' exists)
+        if versions and len(versions) > 0:
+            fork_target = versions[0]['version'] # Use the most recent one
+        else:
+            fork_target = "latest" # Fallback
+            
+        logger.info(f"ℹ️ Forking new version from: {fork_target}")
+
+        payload = {"version": version, "is_stable": False, "from": fork_target}
         create_response = requests.post(f"{base_url}/version", headers=headers, json=payload)
         
         if create_response.status_code == 201:
@@ -375,8 +366,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.7")
-    st.markdown("Logic v2.7: Debug Mode + Quote Sanitization + Embedded Auth")
+    st.title("🚀 ReadMe.io Manager v2.9")
+    st.markdown("Logic v2.9: Fixed Version Creation & Dry Run Bypass")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
@@ -436,8 +427,8 @@ def main():
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
-        # Step 3: Version Check
-        check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger)
+        # Step 3: Version Check (Now with dry_run)
+        check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, dry_run=dry_run)
 
         # Step 4: Edit YAML
         edited_file = process_yaml_content(final_yaml_path, version, logger)
