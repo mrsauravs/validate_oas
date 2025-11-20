@@ -55,7 +55,7 @@ To run this app locally or deploy it, you need:
 ### **1\. Configuration (Sidebar)**
 
 * **ReadMe API Key:** Your project key from ReadMe.io.  
-* **Git Repo URL:** The HTTPS URL of the repository containing your OpenAPI specs (e.g., https://github.com/alation/alation.git).  
+* **Git Repo URL:** The HTTPS URL of the repository containing your OpenAPI specs (e.g., https://github.com/<root-folder>/<git-folder-name>.git).  
 * **Git Username/Token:** Your GitHub credentials.  
   * *Note:* If your organization uses **SSO**, you must authorize your PAT for that organization.  
 * **Internal Paths:** The relative path inside your repo where .yaml files are located.
