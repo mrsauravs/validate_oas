@@ -20,30 +20,22 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- Initialize Session State for Logs ---
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+
 # --- Custom Logging Handler for Streamlit ---
 class StreamlitLogHandler(logging.Handler):
-    def __init__(self, container, download_placeholder=None):
+    def __init__(self, container):
         super().__init__()
         self.container = container
-        self.download_placeholder = download_placeholder
-        self.logs = []
 
     def emit(self, record):
         msg = self.format(record)
-        self.logs.append(msg)
-        full_log = "\n".join(self.logs)
-        
-        self.container.code(full_log, language="text")
-        
-        if self.download_placeholder:
-            unique_key = f"log_download_btn_{len(self.logs)}"
-            self.download_placeholder.download_button(
-                label="📥 Download Log File",
-                data=full_log,
-                file_name="openapi_upload.log",
-                mime="text/plain",
-                key=unique_key
-            )
+        # Append to session state to persist across reruns (downloads)
+        st.session_state.logs.append(msg)
+        # Update the UI container immediately
+        self.container.code("\n".join(st.session_state.logs), language="text")
 
 # --- Helper Functions ---
 
@@ -51,9 +43,6 @@ def get_npx_path():
     return shutil.which("npx")
 
 def validate_env(api_key, required=True):
-    """
-    Validates ReadMe API Key.
-    """
     if not api_key:
         if required:
             st.error("❌ ReadMe API Key is missing. Please enter it in the sidebar.")
@@ -85,11 +74,10 @@ def run_command(command_list, log_logger):
 
 # --- AI Analysis Logic ---
 def analyze_errors_with_gemini(log_content, gemini_key):
-    """Sends logs to Gemini for analysis."""
     if not gemini_key:
         return None
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={gemini_key}"
     
     prompt = f"""
     You are an expert OpenAPI Validator. Analyze the following log output from a CI/CD pipeline. 
@@ -144,11 +132,9 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             clean_netloc = parsed.netloc
 
         auth_netloc = f"{safe_user}:{safe_token}@{clean_netloc}"
-        
         auth_repo_url = urllib.parse.urlunparse((
             parsed.scheme, auth_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
         ))
-        
         masked_netloc = f"****:***@{clean_netloc}"
         masked_repo_url = urllib.parse.urlunparse((
             parsed.scheme, masked_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
@@ -167,7 +153,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     if not repo_path.exists():
         logger.info(f"⬇️ Cloning from: {masked_repo_url}")
         git_args = ["-c", "core.askPass=echo"] 
-        
         try:
             cmd = ["git"] + git_args + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
             result = subprocess.run(cmd, capture_output=True, text=True, env=clean_env)
@@ -250,7 +235,6 @@ def prepare_files(filename, paths, workspace, logger):
 # --- ReadMe API Logic ---
 
 def check_and_create_version(version, api_key, base_url, logger, create_if_missing=False):
-    # If no key, skip entirely
     if not api_key:
         return
 
@@ -260,7 +244,6 @@ def check_and_create_version(version, api_key, base_url, logger, create_if_missi
         response = requests.get(f"{base_url}/version", headers=headers)
         if response.status_code != 200:
             logger.error(f"❌ Failed to fetch versions: {response.text}")
-            # Don't stop validation flow just for this check
             return
         
         versions = response.json()
@@ -281,7 +264,6 @@ def check_and_create_version(version, api_key, base_url, logger, create_if_missi
             logger.info(f"✅ Version '{version}' created successfully.")
         else:
             logger.error(f"❌ Failed to create version: {create_response.text}")
-            # Don't stop main flow
     except Exception as e:
         logger.error(f"❌ Network error checking version: {e}")
 
@@ -330,13 +312,17 @@ def get_api_id(api_name, version, api_key, base_url, logger):
         pass
     return None
 
-# --- CALLBACK FUNCTION ---
+# --- CALLBACK FUNCTIONS ---
 def clear_credentials():
-    """Clears session state variables. Triggered by button click."""
+    """Clears session state variables."""
     st.session_state.readme_key = ""
     st.session_state.git_user = ""
     st.session_state.git_token = ""
     st.session_state.gemini_key = ""
+
+def clear_logs():
+    """Clears the log history."""
+    st.session_state.logs = []
 
 # --- UI Layout ---
 
@@ -398,7 +384,6 @@ def main():
 
     st.markdown("### 🚀 Actions")
     
-    # Action Buttons
     c1, c2, c3 = st.columns(3)
     btn_swagger = c1.button("Validate Swagger CLI", use_container_width=True)
     btn_redocly = c2.button("Validate Redocly CLI", use_container_width=True)
@@ -410,11 +395,43 @@ def main():
     btn_validate_all = c4.button("🔍 Validate All", use_container_width=True)
     btn_upload = c5.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Validates all and uploads if successful")
 
-    log_container = st.empty()
-    ai_output_container = st.container() # Container for AI Analysis
-    download_placeholder = st.empty()
+    # --- PERSISTENT LOG DISPLAY ---
+    st.markdown("### 📜 Execution Logs")
     
-    # Determine Action State
+    # Log container that is ALWAYS visible if logs exist
+    log_container = st.empty()
+    if st.session_state.logs:
+        log_container.code("\n".join(st.session_state.logs), language="text")
+
+    # Download & Clear Buttons
+    col_d1, col_d2 = st.columns([1, 4])
+    with col_d1:
+        if st.session_state.logs:
+            unique_key = f"dl_btn_{len(st.session_state.logs)}"
+            st.download_button(
+                label="📥 Download Log File",
+                data="\n".join(st.session_state.logs),
+                file_name="openapi_upload.log",
+                mime="text/plain",
+                key=unique_key
+            )
+    with col_d2:
+        if st.session_state.logs:
+             st.button("🗑️ Clear Logs", on_click=clear_logs)
+
+    # AI Analysis Section (Always visible if logs exist)
+    if st.session_state.logs and gemini_key:
+        if st.button("🤖 Analyze Logs with Gemini AI"):
+            with st.spinner("Analyzing errors..."):
+                log_text = "\n".join(st.session_state.logs)
+                analysis = analyze_errors_with_gemini(log_text, gemini_key)
+                if analysis:
+                    st.markdown("### 🤖 AI Fix Suggestion")
+                    st.markdown(analysis)
+    elif st.session_state.logs and not gemini_key:
+        st.info("💡 Enter a Gemini API Key in the sidebar to unlock AI error analysis.")
+
+    # --- MAIN ACTION LOGIC ---
     action = None
     if btn_swagger: action = 'swagger'
     elif btn_redocly: action = 'redocly'
@@ -423,27 +440,20 @@ def main():
     elif btn_upload: action = 'upload'
 
     if action:
+        # Clear old logs at start of NEW run
+        st.session_state.logs = []
+        
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
         
-        # Pass both placeholders
-        handler = StreamlitLogHandler(log_container, download_placeholder)
+        # Handler updates session_state.logs AND the container
+        handler = StreamlitLogHandler(log_container)
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
-        # --- PRE-FLIGHT CHECKS ---
-        # ReadMe/Upload/All require Key? 
-        # Validate All -> ReadMe Key needed for 3rd step.
-        # Upload -> ReadMe Key needed.
-        # ReadMe CLI -> ReadMe Key needed.
-        
         req_key_for_action = True if action in ['readme', 'all', 'upload'] else False
-        
-        # If 'Validate All' is clicked but no key, we can still run Swagger/Redocly and just warn about ReadMe
-        # But if 'Upload' is clicked, we strictly fail.
         strict_key_req = True if action == 'upload' else False
-        
         has_key = validate_env(readme_key, required=strict_key_req)
         
         npx_path = get_npx_path()
@@ -464,21 +474,16 @@ def main():
 
         validation_failed = False
         
-        # --- VALIDATION PIPELINE ---
-        
-        # 1. Swagger
         if action in ['swagger', 'all', 'upload']:
             logger.info("🔍 Running Swagger CLI...")
             if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: 
                 validation_failed = True
         
-        # 2. Redocly
         if action in ['redocly', 'all', 'upload']:
             logger.info("🔍 Running Redocly CLI (Pinned v1.25.0)...")
             if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: 
                 validation_failed = True
             
-        # 3. ReadMe
         if action in ['readme', 'all', 'upload']:
             if has_key:
                 logger.info("🔍 Running ReadMe CLI (Pinned v8)...")
@@ -487,49 +492,30 @@ def main():
             else:
                 logger.warning("⚠️ Skipping ReadMe CLI validation (No API Key provided).")
 
-        # --- POST-VALIDATION DECISION ---
-        
         if validation_failed:
             logger.error("❌ Validation failed.")
             st.error("Validation Failed.")
-            
-            # --- AI ANALYSIS ---
-            if gemini_key:
-                with ai_output_container:
-                    st.info("🤖 Analyzing errors with Gemini...")
-                    # Reconstruct log text from handler
-                    log_text = "\n".join(handler.logs)
-                    analysis = analyze_errors_with_gemini(log_text, gemini_key)
-                    if analysis:
-                        st.markdown("### 🤖 AI Fix Suggestion")
-                        st.markdown(analysis)
-            elif not gemini_key and action in ['all', 'upload']:
-                 st.caption("💡 Tip: Enter a Gemini API Key in the sidebar to get automatic fix suggestions.")
-            
             if action == 'upload':
                 st.error("Aborting upload due to validation errors.")
-            
-            st.stop()
+            # Do NOT st.stop() here if we want to allow the user to see the "Analyze with AI" button below
         else:
             logger.info("✅ Selected validations passed.")
 
-        # --- UPLOAD STEP ---
-        if action == 'upload':
-            logger.info("🚀 Uploading to ReadMe...")
-            with open(edited_file, "r") as f:
-                title = yaml.safe_load(f).get("info", {}).get("title", "")
-            
-            api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
-            cmd = [npx_path, "--yes", "rdme@8", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
-            if api_id: cmd.extend(["--id", api_id])
-            
-            if run_command(cmd, logger) == 0:
-                logger.info("🎉 Upload Successful!")
-                st.success("Done!")
+            if action == 'upload':
+                logger.info("🚀 Uploading to ReadMe...")
+                with open(edited_file, "r") as f:
+                    title = yaml.safe_load(f).get("info", {}).get("title", "")
+                
+                api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
+                cmd = [npx_path, "--yes", "rdme@8", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+                if api_id: cmd.extend(["--id", api_id])
+                
+                if run_command(cmd, logger) == 0:
+                    logger.info("🎉 Upload Successful!")
+                    st.success("Done!")
+                else:
+                    logger.error("❌ Upload failed.")
             else:
-                logger.error("❌ Upload failed.")
-        else:
-            if not validation_failed:
                 st.success("Validation Check Complete.")
 
 if __name__ == "__main__":
