@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.13",
+    page_title="OAS Validator v1.0",
     page_icon="📘",
     layout="wide"
 )
@@ -38,8 +38,6 @@ class StreamlitLogHandler(logging.Handler):
         
         # Update the download button in real-time
         if self.download_placeholder:
-            # CRITICAL FIX: We append the log count to the key.
-            # This ensures every render has a unique key, preventing StreamlitDuplicateElementKey errors.
             unique_key = f"log_download_btn_{len(self.logs)}"
             
             self.download_placeholder.download_button(
@@ -84,7 +82,7 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (v2.12 - Privacy Update) ---
+# --- Git Logic ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones/Pulls repo with specific handling for SAML SSO errors."""
@@ -96,13 +94,11 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     git_username = git_username.strip().strip('"').strip("'")
     git_token = git_token.strip().strip('"').strip("'")
 
-    # 1. Fix double https://
     if repo_url.count("https://") > 1:
         match = re.search(r"(https://github\.com/.*)$", repo_url)
         if match:
             repo_url = match.group(1)
 
-    # 2. Construct Authenticated URL
     try:
         parsed = urllib.parse.urlparse(repo_url)
         safe_user = urllib.parse.quote(git_username, safe='')
@@ -119,7 +115,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             parsed.scheme, auth_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
         ))
         
-        # Masked URL for logging (Hides both User and Token for privacy)
         masked_netloc = f"****:***@{clean_netloc}"
         masked_repo_url = urllib.parse.urlunparse((
             parsed.scheme, masked_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
@@ -129,7 +124,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
         logger.error(f"❌ URL Construction Failed: {e}")
         st.stop()
 
-    # 3. Env Setup
     clean_env = os.environ.copy()
     null_path = "NUL" if platform.system() == "Windows" else "/dev/null"
     clean_env["GIT_CONFIG_GLOBAL"] = null_path
@@ -147,7 +141,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             result = subprocess.run(cmd, capture_output=True, text=True, env=clean_env)
             
             if result.returncode != 0:
-                # --- SSO ERROR DETECTION ---
                 sso_match = re.search(r"(https://github\.com/orgs/[^/]+/sso\?authorization_request=[^\s]+)", result.stderr)
                 
                 if sso_match:
@@ -157,14 +150,11 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
                     st.markdown(f"👉 **[Click here to Authorize your Token]({sso_url})**")
                     st.caption("After authorizing, click 'Start Process' again.")
                     st.stop()
-                
                 elif "403" in result.stderr:
                     st.error("🚨 Authentication Failed (403).")
                     st.info("Ensure your Token has 'repo' scope and SSO is configured.")
                     st.stop()
-                
                 else:
-                    # Filter sensitive data from error logs before showing
                     safe_err = result.stderr.replace(git_token, "***").replace(git_username, "****")
                     logger.error(f"❌ Git Output:\n{safe_err}")
                     st.error("Git Clone Failed.")
@@ -189,7 +179,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             logger.warning("⚠️ Continuing with existing files...")
 
 def delete_repo(repo_dir):
-    """Deletes the repo directory to allow a fresh clone."""
     path = Path(repo_dir)
     if path.exists():
         try:
@@ -202,8 +191,6 @@ def delete_repo(repo_dir):
 # --- File Operations ---
 
 def prepare_files(filename, paths, workspace, logger):
-    """Copies necessary files to a workspace."""
-    
     if filename in ["field", "field_value"]:
         source = Path(paths['logical']) / f"{filename}.yaml"
     else:
@@ -255,20 +242,17 @@ def check_and_create_version(version, api_key, base_url, logger, dry_run=False):
             logger.info(f"✅ Version '{version}' exists.")
             return
 
-        # Version does not exist
         if dry_run:
             logger.warning(f"⚠️ Version '{version}' not found. Skipping creation (Dry Run).")
             logger.info(f"ℹ️ The validation will proceed assuming '{version}' will be created later.")
             return
 
-        # If NOT dry run, try to create it
         logger.info(f"⚠️ Version '{version}' not found. Creating it...")
         
-        # FIND BEST FORK TARGET (Don't assume 'latest' exists)
         if versions and len(versions) > 0:
-            fork_target = versions[0]['version'] # Use the most recent one
+            fork_target = versions[0]['version']
         else:
-            fork_target = "latest" # Fallback
+            fork_target = "latest"
             
         logger.info(f"ℹ️ Forking new version from: {fork_target}")
 
@@ -342,14 +326,11 @@ def get_api_id(api_name, version, api_key, base_url, logger):
 def main():
     st.sidebar.title("⚙️ Configuration")
     
-    # Load secrets
     load_dotenv()
     secrets = st.secrets if os.path.exists(".streamlit/secrets.toml") else {}
     
-    # 1. ReadMe Credentials
     readme_key = st.sidebar.text_input("ReadMe API Key", value=secrets.get("README_API_KEY", os.getenv("README_API_KEY", "")), type="password")
     
-    # 2. Git Configuration
     st.sidebar.subheader("Git Repo Config")
     
     default_local_path = str(Path.home() / "Developer" / "alation")
@@ -361,7 +342,6 @@ def main():
     repo_url = st.sidebar.text_input("Git Repo URL", value="https://github.com/alation/alation.git")
     repo_path = st.sidebar.text_input("Local Clone Path", value=repo_dir_default)
     
-    # Add Reset Button
     if st.sidebar.button("🗑️ Reset / Delete Cloned Repo"):
         success, msg = delete_repo(repo_path)
         if success:
@@ -373,7 +353,6 @@ def main():
     st.sidebar.caption("GitHub Handle (e.g., user-name-company)")
     git_token = st.sidebar.text_input("Git Token/PAT", value=secrets.get("GIT_TOKEN", ""), type="password")
 
-    # 3. Path Mapping
     st.sidebar.subheader("Internal Paths")
     spec_rel_path = st.sidebar.text_input("Specs Path (relative to repo)", value="django/static/swagger/specs")
     
@@ -388,9 +367,8 @@ def main():
     
     workspace_dir = "./temp_workspace"
 
-    # Main Content
-    st.title("🚀 ReadMe.io Manager v2.13")
-    st.markdown("Logic v2.13: Fix StreamlitDuplicateElementKey error")
+    st.title("🚀 ReadMe.io Manager v2.14")
+    st.markdown("Logic v2.14: Fixed CLI version targets")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
@@ -426,17 +404,14 @@ def main():
     dry_run = st.checkbox("Dry Run (Validate Only)", value=True)
     start_btn = st.button("Start Process", type="primary")
 
-    # Placeholders for logs and download button
     log_container = st.empty()
     download_placeholder = st.empty()
     
     if start_btn:
-        # Init Logger with download placeholder
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
         
-        # Pass the download_placeholder to the handler
         handler = StreamlitLogHandler(log_container, download_placeholder)
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
@@ -447,34 +422,30 @@ def main():
             logger.error("❌ NodeJS/npx not found.")
             st.stop()
 
-        # Step 1: Git Clone/Pull
         setup_git_repo(repo_url, repo_path, git_token, git_user, logger)
 
-        # Step 2: Prepare Files
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
-        # Step 3: Version Check
         check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, dry_run=dry_run)
 
-        # Step 4: Edit YAML
         edited_file = process_yaml_content(final_yaml_path, version, logger)
 
-        # Step 5: Validations
         validation_failed = False
         
-        # NOTE: We pin versions to match Streamlit Cloud's Node v18 environment
         if run_swagger:
             logger.info("🔍 Running Swagger CLI...")
             if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: validation_failed = True
         
         if run_redocly:
-            logger.info("🔍 Running Redocly CLI (Pinned v1.25.0)...")
-            if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: validation_failed = True
+            # Use Redocly CLI v1 which is more stable for Node 18
+            logger.info("🔍 Running Redocly CLI...")
+            if run_command([npx_path, "--yes", "@redocly/cli@1", "lint", str(edited_file)], logger) != 0: validation_failed = True
             
         if run_readme:
-            logger.info("🔍 Running ReadMe CLI (Pinned v9.3.2)...")
-            if run_command([npx_path, "--yes", "rdme@9.3.2", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
+            # Use generic major version '9' to find the latest compatible one
+            logger.info("🔍 Running ReadMe CLI...")
+            if run_command([npx_path, "--yes", "rdme@9", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
 
         if validation_failed:
             logger.error("❌ Validation failed. Aborting upload.")
@@ -483,7 +454,6 @@ def main():
         else:
             logger.info("✅ All validations passed.")
 
-        # Step 6: Upload
         if dry_run:
             logger.info("🏁 Dry run complete.")
             st.success("Dry run completed!")
@@ -495,8 +465,8 @@ def main():
                 
             api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
             
-            # Use pinned version for upload as well
-            cmd = [npx_path, "--yes", "rdme@9.3.2", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+            # Use generic major version '9' for upload as well
+            cmd = [npx_path, "--yes", "rdme@9", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
             if api_id: cmd.extend(["--id", api_id])
             
             if run_command(cmd, logger) == 0:
