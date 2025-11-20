@@ -15,22 +15,36 @@ from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.9",
+    page_title="ReadMe.io OpenAPI Manager v2.12",
     page_icon="📘",
     layout="wide"
 )
 
 # --- Custom Logging Handler for Streamlit ---
 class StreamlitLogHandler(logging.Handler):
-    def __init__(self, container):
+    def __init__(self, container, download_placeholder=None):
         super().__init__()
         self.container = container
+        self.download_placeholder = download_placeholder
         self.logs = []
 
     def emit(self, record):
         msg = self.format(record)
         self.logs.append(msg)
-        self.container.code("\n".join(self.logs), language="text")
+        full_log = "\n".join(self.logs)
+        
+        # Update the code block
+        self.container.code(full_log, language="text")
+        
+        # Update the download button in real-time
+        if self.download_placeholder:
+            self.download_placeholder.download_button(
+                label="📥 Download Log File",
+                data=full_log,
+                file_name="openapi_upload.log",
+                mime="text/plain",
+                key="log_download_btn"
+            )
 
 # --- Helper Functions ---
 
@@ -46,6 +60,9 @@ def validate_env(api_key):
 def run_command(command_list, log_logger):
     """Runs a subprocess command and logs output real-time."""
     try:
+        cmd_str = " ".join(command_list)
+        log_logger.info(f"Running: {cmd_str}")
+        
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
@@ -56,14 +73,14 @@ def run_command(command_list, log_logger):
         for line in process.stdout:
             clean = line.strip()
             if clean:
-                log_logger.info(f"[{command_list[0]}] {clean}")
+                log_logger.info(f"[CLI] {clean}")
         process.wait()
         return process.returncode
     except Exception as e:
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (v2.8 - SSO Detection + v2.7 Auth) ---
+# --- Git Logic (v2.12 - Privacy Update) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones/Pulls repo with specific handling for SAML SSO errors."""
@@ -98,7 +115,8 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             parsed.scheme, auth_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
         ))
         
-        masked_netloc = f"{safe_user}:***@{clean_netloc}"
+        # Masked URL for logging (Hides both User and Token for privacy)
+        masked_netloc = f"****:***@{clean_netloc}"
         masked_repo_url = urllib.parse.urlunparse((
             parsed.scheme, masked_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment
         ))
@@ -117,7 +135,6 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     if not repo_path.exists():
         logger.info(f"⬇️ Cloning from: {masked_repo_url}")
         
-        # Basic clone (no headers, relies on URL auth)
         git_args = ["-c", "core.askPass=echo"] 
         
         try:
@@ -143,7 +160,9 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
                     st.stop()
                 
                 else:
-                    logger.error(f"❌ Git Output:\n{result.stderr}")
+                    # Filter sensitive data from error logs before showing
+                    safe_err = result.stderr.replace(git_token, "***").replace(git_username, "****")
+                    logger.error(f"❌ Git Output:\n{safe_err}")
                     st.error("Git Clone Failed.")
                     st.stop()
             
@@ -347,7 +366,7 @@ def main():
             st.sidebar.warning(msg)
     
     git_user = st.sidebar.text_input("Git Username", value=secrets.get("GIT_USERNAME", ""))
-    st.sidebar.caption("GitHub Handle (e.g., saurabh-sugandh-alation)")
+    st.sidebar.caption("GitHub Handle (e.g., user-name-company)") # <--- UPDATED
     git_token = st.sidebar.text_input("Git Token/PAT", value=secrets.get("GIT_TOKEN", ""), type="password")
 
     # 3. Path Mapping
@@ -366,8 +385,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.9")
-    st.markdown("Logic v2.9: Fixed Version Creation & Dry Run Bypass")
+    st.title("🚀 ReadMe.io Manager v2.12")
+    st.markdown("Logic v2.12: UI Cleaned & Logs Masked")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
@@ -403,14 +422,18 @@ def main():
     dry_run = st.checkbox("Dry Run (Validate Only)", value=True)
     start_btn = st.button("Start Process", type="primary")
 
+    # Placeholders for logs and download button
     log_container = st.empty()
+    download_placeholder = st.empty()
     
     if start_btn:
-        # Init Logger
+        # Init Logger with download placeholder
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
-        handler = StreamlitLogHandler(log_container)
+        
+        # Pass the download_placeholder to the handler
+        handler = StreamlitLogHandler(log_container, download_placeholder)
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
@@ -427,7 +450,7 @@ def main():
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
-        # Step 3: Version Check (Now with dry_run)
+        # Step 3: Version Check
         check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, dry_run=dry_run)
 
         # Step 4: Edit YAML
@@ -435,17 +458,19 @@ def main():
 
         # Step 5: Validations
         validation_failed = False
+        
+        # NOTE: We pin versions to match Streamlit Cloud's Node v18 environment
         if run_swagger:
             logger.info("🔍 Running Swagger CLI...")
             if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: validation_failed = True
         
         if run_redocly:
-            logger.info("🔍 Running Redocly CLI...")
-            if run_command([npx_path, "--yes", "@redocly/cli", "lint", str(edited_file)], logger) != 0: validation_failed = True
+            logger.info("🔍 Running Redocly CLI (Pinned v1.25.0)...")
+            if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: validation_failed = True
             
         if run_readme:
-            logger.info("🔍 Running ReadMe CLI...")
-            if run_command([npx_path, "--yes", "rdme", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
+            logger.info("🔍 Running ReadMe CLI (Pinned v9.3.2)...")
+            if run_command([npx_path, "--yes", "rdme@9.3.2", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
 
         if validation_failed:
             logger.error("❌ Validation failed. Aborting upload.")
@@ -466,7 +491,8 @@ def main():
                 
             api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
             
-            cmd = [npx_path, "rdme", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+            # Use pinned version for upload as well
+            cmd = [npx_path, "--yes", "rdme@9.3.2", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
             if api_id: cmd.extend(["--id", api_id])
             
             if run_command(cmd, logger) == 0:
