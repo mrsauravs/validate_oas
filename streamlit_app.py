@@ -8,12 +8,13 @@ import logging
 import sys
 import urllib.parse
 import base64
+import re  # New import for Regex
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.4",
+    page_title="ReadMe.io OpenAPI Manager v2.5",
     page_icon="📘",
     layout="wide"
 )
@@ -61,41 +62,51 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (v2.4 - Header Auth + Input Sanitization) ---
+# --- Git Logic (v2.5 - Aggressive Overrides) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones or pulls the repo using Header-based authentication."""
     
-    logger.info("🚀 Starting Git Operation (Logic v2.4 - Header Auth)...")
+    logger.info("🚀 Starting Git Operation (Logic v2.5 - Aggressive Overrides)...")
     
     repo_path = Path(repo_dir)
     repo_url = repo_url.strip()
     git_username = git_username.strip()
     git_token = git_token.strip()
 
-    # SANITIZATION: Fix double https:// error if present
-    if "https://https://" in repo_url:
-        logger.warning("⚠️ Detected double 'https://' in URL. Fixing automatically...")
-        repo_url = repo_url.replace("https://https://", "https://")
+    # --- 1. Aggressive URL Cleaning ---
+    # Ensure we don't have double https or accidental pasting errors
+    # If the user pasted "https://github.com/https://github.com/...", fix it.
+    if repo_url.count("https://") > 1:
+        logger.warning("⚠️ Detected multiple 'https://' in URL. Attempting to fix...")
+        # Find the last occurrence of https://github.com
+        match = re.search(r"(https://github\.com/.*)$", repo_url)
+        if match:
+            repo_url = match.group(1)
+            logger.info(f"🔧 Fixed URL to: {repo_url}")
 
-    # Config flags
-    # 1. Disable 'insteadOf' to prevent SSH rewriting
-    # 2. Add Authorization Header directly (avoids URL parsing issues)
-    git_args = ["-c", "url.https://github.com/.insteadOf="]
+    # --- 2. Git Configuration Flags ---
+    # We override ALL possible variations of URL rewriting to stop the double-URL bug.
+    git_args = [
+        "-c", "url.https://github.com/.insteadOf=",  # Clear rule with trailing slash
+        "-c", "url.https://github.com.insteadOf=",   # Clear rule without trailing slash
+        "-c", "core.askPass=echo",                   # Prevent interactive password prompts
+    ]
     
     if git_token and git_username:
         # Create Basic Auth Header (user:token base64 encoded)
+        # This method avoids putting the token in the URL entirely
         auth_str = f"{git_username}:{git_token}"
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
         git_args.extend(["-c", f"http.extraHeader=Authorization: Basic {auth_b64}"])
 
-    # Clean URL (Remove any existing auth if user pasted it in)
+    # --- 3. Clean URL Parsing ---
     try:
         parsed = urllib.parse.urlparse(repo_url)
-        # Rebuild URL without username/password parts
+        # Rebuild URL without username/password parts to ensure it's clean
         clean_url = urllib.parse.urlunparse((
             parsed.scheme, 
-            parsed.netloc.split("@")[-1], # Remove user:pass@ if present
+            parsed.netloc.split("@")[-1], 
             parsed.path, 
             parsed.params, 
             parsed.query, 
@@ -109,29 +120,25 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
         try:
             logger.info(f"Executing clone for: {clean_url}")
             
-            # Command: git -c ... clone URL path
             cmd = ["git"] + git_args + ["clone", "--depth", "1", clean_url, str(repo_path)]
             
             result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+                # Special error handling
+                if "Authentication Failed" in result.stderr or "403" in result.stderr:
+                    logger.error("❌ Auth Failed.")
+                    st.error("🚨 Authentication Failed (403).")
+                    st.info("👉 Check: 1. SSO Authorization for Alation Org. 2. Token Scope (needs 'repo').")
+                    st.stop()
+                else:
+                    raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
                 
             logger.info("✅ Repo cloned successfully.")
             
         except subprocess.CalledProcessError as e:
             logger.error("❌ Git clone failed.")
-            
-            err_msg = e.stderr.lower() if e.stderr else ""
-            if "403" in err_msg:
-                st.error("🚨 Authentication Failed (403).")
-                st.info("👉 Check: 1. SSO Authorization for Alation Org. 2. Token Scope (needs 'repo').")
-            elif "not found" in err_msg:
-                st.error("🚨 Repo Not Found.")
-                st.error(f"Raw Error: {e.stderr}")
-                st.caption("Check if the URL above is correct and accessible.")
-            else:
-                st.error(f"Git Error: {e.stderr}")
+            st.error(f"Git Error: {e.stderr}")
             st.stop()
     else:
         logger.info(f"🔄 Repo exists at {repo_dir}. Pulling latest...")
@@ -329,8 +336,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.4")
-    st.markdown("Logic v2.4: Header Auth + Input Sanitization")
+    st.title("🚀 ReadMe.io Manager v2.5")
+    st.markdown("Aggressive Git Overrides to Fix URL Issues.")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
