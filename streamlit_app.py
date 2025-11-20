@@ -7,12 +7,13 @@ import os
 import logging
 import sys
 import urllib.parse
+import base64  # <--- New Import for Header Auth
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.2",
+    page_title="ReadMe.io OpenAPI Manager v2.3",
     page_icon="📘",
     layout="wide"
 )
@@ -60,65 +61,50 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (Robust URL Builder) ---
+# --- Git Logic (Header-Based Auth) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
-    """Clones or pulls the repo depending on whether it exists."""
+    """Clones or pulls the repo using Header-based authentication."""
     
     repo_path = Path(repo_dir)
     repo_url = repo_url.strip()
     git_username = git_username.strip()
     git_token = git_token.strip()
 
-    # --- Robust URL Construction ---
-    # Uses urllib to handle parts safely instead of string replacement
+    # Config flags
+    # 1. Disable 'insteadOf' to prevent SSH rewriting
+    # 2. Add Authorization Header directly (avoids URL parsing issues)
+    git_args = ["-c", "url.https://github.com/.insteadOf="]
+    
+    if git_token and git_username:
+        # Create Basic Auth Header (user:token base64 encoded)
+        auth_str = f"{git_username}:{git_token}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+        git_args.extend(["-c", f"http.extraHeader=Authorization: Basic {auth_b64}"])
+
+    # Clean URL (Remove any existing auth if user pasted it in)
     try:
         parsed = urllib.parse.urlparse(repo_url)
-        if parsed.scheme in ["https", "http"] and git_token and git_username:
-            # Encode user/pass to safe URL characters
-            safe_user = urllib.parse.quote(git_username, safe='')
-            safe_token = urllib.parse.quote(git_token, safe='')
-            
-            # Remove any existing auth from the netloc (e.g. user@github.com -> github.com)
-            clean_netloc = parsed.netloc.split("@")[-1]
-            
-            # Inject new auth
-            new_netloc = f"{safe_user}:{safe_token}@{clean_netloc}"
-            
-            # Rebuild URL
-            auth_repo_url = urllib.parse.urlunparse((
-                parsed.scheme, 
-                new_netloc, 
-                parsed.path, 
-                parsed.params, 
-                parsed.query, 
-                parsed.fragment
-            ))
-        else:
-            auth_repo_url = repo_url
-            
-    except Exception as e:
-        logger.error(f"❌ URL Parsing Error: {e}")
-        st.stop()
-
-    # Config flag to ignore local SSH overrides
-    # This prevents 'https://' from being converted to 'git@' automatically
-    git_config_override = ["-c", "url.https://github.com/.insteadOf="]
+        # Rebuild URL without username/password parts
+        clean_url = urllib.parse.urlunparse((
+            parsed.scheme, 
+            parsed.netloc.split("@")[-1], # Remove user:pass@ if present
+            parsed.path, 
+            parsed.params, 
+            parsed.query, 
+            parsed.fragment
+        ))
+    except Exception:
+        clean_url = repo_url
 
     if not repo_path.exists():
         logger.info(f"⬇️ Repo not found at {repo_dir}. Cloning from remote...")
         try:
-            # Mask token for logging
-            if git_token:
-                log_url = auth_repo_url.replace(git_token, "AT_TOKEN_HIDDEN")
-            else:
-                log_url = auth_repo_url
-                
-            logger.info(f"Executing clone for: {log_url}")
+            logger.info(f"Executing clone for: {clean_url}")
             
-            cmd = ["git"] + git_config_override + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
+            # Command: git -c ... clone URL path
+            cmd = ["git"] + git_args + ["clone", "--depth", "1", clean_url, str(repo_path)]
             
-            # Run subprocess
             result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
@@ -129,17 +115,12 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
         except subprocess.CalledProcessError as e:
             logger.error("❌ Git clone failed.")
             
-            # Check for common error signatures
             err_msg = e.stderr.lower() if e.stderr else ""
             if "403" in err_msg:
                 st.error("🚨 Authentication Failed (403).")
-                st.info("👉 Solution: Your PAT might need **SSO Authorization**. Go to GitHub Settings > Tokens > Configure SSO > Authorize for Alation.")
-            elif "authentication failed" in err_msg:
-                st.error("🚨 Invalid Credentials.")
-                st.info("👉 Check that your Token is valid and has 'repo' scope.")
+                st.info("👉 Check: 1. SSO Authorization for Alation Org. 2. Token Scope (needs 'repo').")
             elif "not found" in err_msg:
                 st.error("🚨 Repo Not Found.")
-                st.info("👉 Check the Repo URL. If private, ensure your Token has access.")
                 st.error(f"Raw Error: {e.stderr}")
             else:
                 st.error(f"Git Error: {e.stderr}")
@@ -147,12 +128,13 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     else:
         logger.info(f"🔄 Repo exists at {repo_dir}. Pulling latest...")
         try:
-            cmd = ["git"] + git_config_override + ["-C", str(repo_path), "pull"]
+            # Apply auth headers to pull as well
+            cmd = ["git"] + git_args + ["-C", str(repo_path), "pull"]
             subprocess.run(cmd, check=True, capture_output=True)
             logger.info("✅ Repo updated successfully.")
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ Git pull failed: {e}")
-            logger.warning("⚠️ Continuing with existing files (local version might be old).")
+            logger.warning("⚠️ Continuing with existing files.")
 
 def delete_repo(repo_dir):
     """Deletes the repo directory to allow a fresh clone."""
@@ -320,7 +302,7 @@ def main():
             st.sidebar.warning(msg)
     
     git_user = st.sidebar.text_input("Git Username", value=secrets.get("GIT_USERNAME", ""))
-    st.sidebar.caption("Use your GitHub Handle, NOT email (unless SSO requires it).")
+    st.sidebar.caption("GitHub Handle (e.g., saurabh-sugandh-alation)")
     git_token = st.sidebar.text_input("Git Token/PAT", value=secrets.get("GIT_TOKEN", ""), type="password")
 
     # 3. Path Mapping
@@ -339,8 +321,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.2")
-    st.markdown("Now using robust URL parsing to fix cloning errors.")
+    st.title("🚀 ReadMe.io Manager v2.3")
+    st.markdown("Using Header Authentication to fix URL cloning issues.")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
