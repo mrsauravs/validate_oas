@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.1",
+    page_title="ReadMe.io OpenAPI Manager v2.2",
     page_icon="📘",
     layout="wide"
 )
@@ -60,34 +60,61 @@ def run_command(command_list, log_logger):
         log_logger.error(f"❌ Command failed: {e}")
         return 1
 
-# --- Git Logic (Fixed for Credentials & SSO) ---
+# --- Git Logic (Robust URL Builder) ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     """Clones or pulls the repo depending on whether it exists."""
     
     repo_path = Path(repo_dir)
-    
-    # Construct Auth URL if token is provided
-    if git_token and git_username and "https://" in repo_url:
-        clean_url = repo_url.replace("https://", "")
-        
-        # URL Encode credentials to handle emails as usernames
-        safe_user = urllib.parse.quote(git_username, safe='')
-        safe_token = urllib.parse.quote(git_token, safe='')
-        
-        auth_repo_url = f"https://{safe_user}:{safe_token}@{clean_url}"
-    else:
-        auth_repo_url = repo_url
+    repo_url = repo_url.strip()
+    git_username = git_username.strip()
+    git_token = git_token.strip()
+
+    # --- Robust URL Construction ---
+    # Uses urllib to handle parts safely instead of string replacement
+    try:
+        parsed = urllib.parse.urlparse(repo_url)
+        if parsed.scheme in ["https", "http"] and git_token and git_username:
+            # Encode user/pass to safe URL characters
+            safe_user = urllib.parse.quote(git_username, safe='')
+            safe_token = urllib.parse.quote(git_token, safe='')
+            
+            # Remove any existing auth from the netloc (e.g. user@github.com -> github.com)
+            clean_netloc = parsed.netloc.split("@")[-1]
+            
+            # Inject new auth
+            new_netloc = f"{safe_user}:{safe_token}@{clean_netloc}"
+            
+            # Rebuild URL
+            auth_repo_url = urllib.parse.urlunparse((
+                parsed.scheme, 
+                new_netloc, 
+                parsed.path, 
+                parsed.params, 
+                parsed.query, 
+                parsed.fragment
+            ))
+        else:
+            auth_repo_url = repo_url
+            
+    except Exception as e:
+        logger.error(f"❌ URL Parsing Error: {e}")
+        st.stop()
 
     # Config flag to ignore local SSH overrides
+    # This prevents 'https://' from being converted to 'git@' automatically
     git_config_override = ["-c", "url.https://github.com/.insteadOf="]
 
     if not repo_path.exists():
         logger.info(f"⬇️ Repo not found at {repo_dir}. Cloning from remote...")
         try:
-            # Intentionally mask logs
-            safe_log_url = repo_url.replace("https://", f"https://{git_username}:***@")
-            logger.info(f"Executing clone for: {safe_log_url}")
+            # Mask token for logging
+            if git_token:
+                log_url = auth_repo_url.replace(git_token, "AT_TOKEN_HIDDEN")
+            else:
+                log_url = auth_repo_url
+                
+            logger.info(f"Executing clone for: {log_url}")
             
             cmd = ["git"] + git_config_override + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
             
@@ -110,6 +137,10 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
             elif "authentication failed" in err_msg:
                 st.error("🚨 Invalid Credentials.")
                 st.info("👉 Check that your Token is valid and has 'repo' scope.")
+            elif "not found" in err_msg:
+                st.error("🚨 Repo Not Found.")
+                st.info("👉 Check the Repo URL. If private, ensure your Token has access.")
+                st.error(f"Raw Error: {e.stderr}")
             else:
                 st.error(f"Git Error: {e.stderr}")
             st.stop()
@@ -308,8 +339,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.1")
-    st.markdown("Now handling SSO checks and URL encoding.")
+    st.title("🚀 ReadMe.io Manager v2.2")
+    st.markdown("Now using robust URL parsing to fix cloning errors.")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
