@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OAS Validator",
+    page_title="ReadMe.io OpenAPI Spec Validator v1.0",
     page_icon="📘",
     layout="wide"
 )
@@ -324,7 +324,7 @@ def main():
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle (e.g. user-name-company)")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token with 'repo' scope")
 
-    # Clear Credentials Button - Uses Callback to avoid Duplicate Key Errors
+    # Clear Credentials Button
     st.sidebar.button("🔒 Clear Credentials", on_click=clear_credentials)
 
     st.sidebar.subheader("Internal Paths")
@@ -335,7 +335,7 @@ def main():
     paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io OAS Validator")
+    st.title("🚀 ReadMe.io OpenAPI Spec Validator v1.0")
     st.markdown("Public Mode: Credentials must be entered manually.")
     
     col1, col2 = st.columns(2)
@@ -403,8 +403,9 @@ def main():
             if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: validation_failed = True
             
         if run_readme:
-            logger.info("🔍 Running ReadMe CLI (Pinned v9.3.2)...")
-            if run_command([npx_path, "--yes", "rdme@9.3.2", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
+            # FIX: Use major version 8 which is compatible with Node 18
+            logger.info("🔍 Running ReadMe CLI (Pinned v8)...")
+            if run_command([npx_path, "--yes", "rdme@8", "openapi:validate", str(edited_file)], logger) != 0: validation_failed = True
 
         if validation_failed:
             logger.error("❌ Validation failed. Aborting upload.")
@@ -422,7 +423,8 @@ def main():
                 title = yaml.safe_load(f).get("info", {}).get("title", "")
             
             api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
-            cmd = [npx_path, "--yes", "rdme@9.3.2", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+            # FIX: Use major version 8 for upload as well
+            cmd = [npx_path, "--yes", "rdme@8", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
             if api_id: cmd.extend(["--id", api_id])
             
             if run_command(cmd, logger) == 0:
