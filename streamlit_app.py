@@ -363,7 +363,7 @@ def main():
         if success: st.sidebar.success(msg)
         else: st.sidebar.warning(msg)
     
-    repo_url = st.sidebar.text_input("Git Repo URL", key="repo_url")
+    repo_url = st.sidebar.text_input("Git Repo HTTPS URL", key="repo_url")
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token")
 
