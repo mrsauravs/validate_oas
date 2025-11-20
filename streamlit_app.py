@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.12",
+    page_title="ReadMe.io OpenAPI Manager v2.13",
     page_icon="📘",
     layout="wide"
 )
@@ -38,12 +38,16 @@ class StreamlitLogHandler(logging.Handler):
         
         # Update the download button in real-time
         if self.download_placeholder:
+            # CRITICAL FIX: We append the log count to the key.
+            # This ensures every render has a unique key, preventing StreamlitDuplicateElementKey errors.
+            unique_key = f"log_download_btn_{len(self.logs)}"
+            
             self.download_placeholder.download_button(
                 label="📥 Download Log File",
                 data=full_log,
                 file_name="openapi_upload.log",
                 mime="text/plain",
-                key="log_download_btn"
+                key=unique_key
             )
 
 # --- Helper Functions ---
@@ -366,7 +370,7 @@ def main():
             st.sidebar.warning(msg)
     
     git_user = st.sidebar.text_input("Git Username", value=secrets.get("GIT_USERNAME", ""))
-    st.sidebar.caption("GitHub Handle (e.g., user-name-company)") # <--- UPDATED
+    st.sidebar.caption("GitHub Handle (e.g., user-name-company)")
     git_token = st.sidebar.text_input("Git Token/PAT", value=secrets.get("GIT_TOKEN", ""), type="password")
 
     # 3. Path Mapping
@@ -385,8 +389,8 @@ def main():
     workspace_dir = "./temp_workspace"
 
     # Main Content
-    st.title("🚀 ReadMe.io Manager v2.12")
-    st.markdown("Logic v2.12: UI Cleaned & Logs Masked")
+    st.title("🚀 ReadMe.io Manager v2.13")
+    st.markdown("Logic v2.13: Fix StreamlitDuplicateElementKey error")
     
     if is_cloud:
         st.info("☁️ Detected Cloud Environment.")
