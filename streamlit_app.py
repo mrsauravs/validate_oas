@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Manager v2.16",
+    page_title="ReadMe.io OpenAPI Spec Validator v1.0",
     page_icon="📘",
     layout="wide"
 )
@@ -332,7 +332,7 @@ def main():
     paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io Manager v2.16")
+    st.title("🚀 ReadMe.io OpenAPI Spec Validator")
     st.markdown("Public Mode: Credentials must be entered manually.")
     
     col1, col2 = st.columns(2)
