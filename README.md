@@ -1,4 +1,4 @@
-# **ReadMe.io OpenAPI Manager 🚀**
+# **ReadMe.io OpenAPI Spec Validator 🚀**
 
 This is a **Streamlit** application designed to automate the validation and uploading of OpenAPI Specifications (OAS) to [ReadMe.io](https://readme.io).
 
