@@ -533,8 +533,8 @@ def main():
         # 3. README CLI
         if do_readme:
             if has_key:
-                logger.info("🔍 Running ReadMe CLI (Pinned v8)...")
-                if run_command([npx_path, "--yes", "rdme@8", "openapi:validate", str(edited_file), "--key", readme_key], logger) != 0: 
+                logger.info("🔍 Running ReadMe CLI (v9)...")
+                if run_command([npx_path, "--yes", "rdme@9", "openapi:validate", str(edited_file), "--key", readme_key], logger) != 0: 
                     validation_failed = True
             else:
                 logger.warning("⚠️ Skipping ReadMe CLI validation (No API Key provided).")
@@ -555,7 +555,7 @@ def main():
                     title = yaml.safe_load(f).get("info", {}).get("title", "")
                 
                 api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
-                cmd = [npx_path, "--yes", "rdme@8", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+                cmd = [npx_path, "--yes", "rdme@9", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
                 if api_id: cmd.extend(["--id", api_id])
                 
                 if run_command(cmd, logger) == 0:
