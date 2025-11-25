@@ -17,7 +17,7 @@ from google.genai import types
 
 # Page Config
 st.set_page_config(
-    page_title="ReadMe.io OpenAPI Spec Validator v1.0",
+    page_title="OpenAPI Spec Validator v1.0",
     page_icon="📘",
     layout="wide"
 )
@@ -398,7 +398,7 @@ def main():
     paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 ReadMe.io OpenAPI Spec Validator v1.0")
+    st.title("🚀 OpenAPI Spec Validator v1.0")
     
     col1, col2 = st.columns(2)
     with col1:
