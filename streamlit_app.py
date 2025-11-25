@@ -381,7 +381,11 @@ def main():
         else: st.sidebar.warning(msg)
     
     repo_url = st.sidebar.text_input("Git Repo HTTPS URL", key="repo_url")
-    branch_name = st.sidebar.text_input("Branch Name", value="main", help="Enter the specific feature branch name")
+    
+    # --- NEW: Branch Input ---
+    branch_name = st.sidebar.text_input("Branch Name", value="main", help="Enter the specific feature branch name (e.g., feature/login-update)")
+    # -------------------------
+
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token")
 
@@ -410,23 +414,28 @@ def main():
         else:
             selected_file = st.text_input("Enter Filename (e.g. 'audit')", "audit")
             if not abs_spec_path.exists():
-                st.warning(f"⚠️ Repo not synced yet. Click 'Start Process' to clone.")
+                st.warning(f"⚠️ Repo not synced yet. Click 'Validate' to clone branch '{branch_name}'.")
 
     with col2:
         version = st.text_input("API Version", "1.0")
 
-    st.markdown("### 🚀 Actions")
+    # --- NEW: Checkbox UI ---
+    st.markdown("### 🚀 Validation Settings")
     
-    c1, c2, c3 = st.columns(3)
-    btn_swagger = c1.button("Validate Swagger CLI", use_container_width=True)
-    btn_redocly = c2.button("Validate Redocly CLI", use_container_width=True)
-    btn_readme = c3.button("Validate ReadMe CLI", use_container_width=True, help="Requires ReadMe API Key")
+    c_check1, c_check2, c_check3 = st.columns(3)
+    with c_check1:
+        use_swagger = st.checkbox("Swagger CLI", value=True)
+    with c_check2:
+        use_redocly = st.checkbox("Redocly CLI", value=True)
+    with c_check3:
+        use_readme = st.checkbox("ReadMe CLI", value=False, help="Requires ReadMe API Key")
     
     st.markdown("---")
     
-    c4, c5 = st.columns(2)
-    btn_validate_all = c4.button("🔍 Validate All", use_container_width=True)
-    btn_upload = c5.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Validates all and uploads if successful")
+    c_btn1, c_btn2 = st.columns(2)
+    # The trigger buttons
+    btn_validate_selected = c_btn1.button("🔍 Validate Selected", use_container_width=True)
+    btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Runs ALL validations, then uploads.")
 
     # --- PERSISTENT LOG DISPLAY ---
     st.markdown("### 📜 Execution Logs")
@@ -451,12 +460,11 @@ def main():
         if st.session_state.logs:
              st.button("🗑️ Clear Logs", on_click=clear_logs)
 
-    # AI Analysis Section (Using Google Gen AI SDK)
+    # AI Analysis Section
     if st.session_state.logs and gemini_key:
         if st.button(f"🤖 Analyze Logs with {ai_model}"):
             with st.spinner("Analyzing errors..."):
                 log_text = "\n".join(st.session_state.logs)
-                # Use the new SDK logic
                 analysis = analyze_errors_with_ai(log_text, gemini_key, ai_model)
                 if analysis:
                     st.markdown("### 🤖 AI Fix Suggestion")
@@ -464,26 +472,22 @@ def main():
     elif st.session_state.logs and not gemini_key:
         st.info("💡 Enter a Gemini API Key in the sidebar to unlock error analysis.")
 
-    # --- MAIN ACTION LOGIC ---
-    action = None
-    if btn_swagger: action = 'swagger'
-    elif btn_redocly: action = 'redocly'
-    elif btn_readme: action = 'readme'
-    elif btn_validate_all: action = 'all'
-    elif btn_upload: action = 'upload'
-
-    if action:
+    # --- EXECUTION LOGIC ---
+    
+    # Check if either main action button was clicked
+    if btn_validate_selected or btn_upload:
         st.session_state.logs = [] # Clear old logs
         
+        # Setup Logger
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
-        
         handler = StreamlitLogHandler(log_container, download_placeholder)
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
-        strict_key_req = True if action == 'upload' else False
+        # Validate Environment
+        strict_key_req = True if btn_upload else False
         has_key = validate_env(readme_key, required=strict_key_req)
         
         npx_path = get_npx_path()
@@ -491,30 +495,43 @@ def main():
             logger.error("❌ NodeJS/npx not found.")
             st.stop()
 
+        # --- UPDATED GIT CALL: Pass branch_name ---
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
+        # ------------------------------------------
 
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
         if has_key:
-            create_ver = True if action == 'upload' else False
+            # Only create version if uploading
+            create_ver = True if btn_upload else False
             check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=create_ver)
 
         edited_file = process_yaml_content(final_yaml_path, version, logger)
 
+        # --- DETERMINE WHICH VALIDATIONS TO RUN ---
+        # If Uploading, we force ALL checks to be True for safety.
+        # If Validating, we use the Checkbox values.
+        do_swagger = True if btn_upload else use_swagger
+        do_redocly = True if btn_upload else use_redocly
+        do_readme  = True if btn_upload else use_readme
+
         validation_failed = False
         
-        if action in ['swagger', 'all', 'upload']:
+        # 1. SWAGGER CLI
+        if do_swagger:
             logger.info("🔍 Running Swagger CLI...")
             if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: 
                 validation_failed = True
         
-        if action in ['redocly', 'all', 'upload']:
+        # 2. REDOCLY CLI
+        if do_redocly:
             logger.info("🔍 Running Redocly CLI (Pinned v1.25.0)...")
             if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: 
                 validation_failed = True
             
-        if action in ['readme', 'all', 'upload']:
+        # 3. README CLI
+        if do_readme:
             if has_key:
                 logger.info("🔍 Running ReadMe CLI (Pinned v8)...")
                 if run_command([npx_path, "--yes", "rdme@8", "openapi:validate", str(edited_file), "--key", readme_key], logger) != 0: 
@@ -522,15 +539,17 @@ def main():
             else:
                 logger.warning("⚠️ Skipping ReadMe CLI validation (No API Key provided).")
 
+        # --- RESULT HANDLING ---
         if validation_failed:
             logger.error("❌ Validation failed.")
             st.error("Validation Failed.")
-            if action == 'upload':
+            if btn_upload:
                 st.error("Aborting upload due to validation errors.")
         else:
             logger.info("✅ Selected validations passed.")
 
-            if action == 'upload':
+            # Only proceed to upload if the Upload button was clicked
+            if btn_upload:
                 logger.info("🚀 Uploading to ReadMe...")
                 with open(edited_file, "r") as f:
                     title = yaml.safe_load(f).get("info", {}).get("title", "")
