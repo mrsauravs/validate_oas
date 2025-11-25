@@ -434,7 +434,7 @@ def main():
     c_btn1, c_btn2 = st.columns(2)
     # The trigger buttons
     btn_validate_selected = c_btn1.button("🔍 Validate Selected", use_container_width=True)
-    btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Runs ALL validations, then uploads.")
+    btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Runs Swagger + ReadMe checks, then uploads.")
 
     # --- PERSISTENT LOG DISPLAY ---
     st.markdown("### 📜 Execution Logs")
@@ -504,10 +504,18 @@ def main():
 
         edited_file = process_yaml_content(final_yaml_path, version, logger)
 
-        # Logic for validations
-        do_swagger = True if btn_upload else use_swagger
-        do_redocly = True if btn_upload else use_redocly
-        do_readme  = True if btn_upload else use_readme
+        # --- UPDATED VALIDATION LOGIC ---
+        if btn_upload:
+            # If UPLOADING: Run Swagger + ReadMe. Skip Redocly (Too strict).
+            do_swagger = True
+            do_redocly = False
+            do_readme = True
+        else:
+            # If VALIDATING: Use checkboxes
+            do_swagger = use_swagger
+            do_redocly = use_redocly
+            do_readme = use_readme
+        # --------------------------------
 
         validation_failed = False
         
@@ -527,7 +535,6 @@ def main():
         if do_readme:
             if has_key:
                 logger.info("🔍 Running ReadMe CLI (v9)...")
-                # --- CHANGE HERE: Split command, REMOVE --key for validation ---
                 if run_command([npx_path, "--yes", "rdme@9", "openapi", "validate", str(edited_file)], logger) != 0: 
                     validation_failed = True
             else:
@@ -549,7 +556,6 @@ def main():
                 
                 api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
                 
-                # Upload still needs the key
                 cmd = [npx_path, "--yes", "rdme@9", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
                 
                 if api_id: cmd.extend(["--id", api_id])
