@@ -382,9 +382,8 @@ def main():
     
     repo_url = st.sidebar.text_input("Git Repo HTTPS URL", key="repo_url")
     
-    # --- NEW: Branch Input ---
+    # --- Branch Input ---
     branch_name = st.sidebar.text_input("Branch Name", value="main", help="Enter the specific feature branch name (e.g., feature/login-update)")
-    # -------------------------
 
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token")
@@ -419,7 +418,7 @@ def main():
     with col2:
         version = st.text_input("API Version", "1.0")
 
-    # --- NEW: Checkbox UI ---
+    # --- Checkbox UI ---
     st.markdown("### 🚀 Validation Settings")
     
     c_check1, c_check2, c_check3 = st.columns(3)
@@ -473,8 +472,6 @@ def main():
         st.info("💡 Enter a Gemini API Key in the sidebar to unlock error analysis.")
 
     # --- EXECUTION LOGIC ---
-    
-    # Check if either main action button was clicked
     if btn_validate_selected or btn_upload:
         st.session_state.logs = [] # Clear old logs
         
@@ -495,23 +492,19 @@ def main():
             logger.error("❌ NodeJS/npx not found.")
             st.stop()
 
-        # --- UPDATED GIT CALL: Pass branch_name ---
+        # GIT CALL
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
-        # ------------------------------------------
 
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
 
         if has_key:
-            # Only create version if uploading
             create_ver = True if btn_upload else False
             check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=create_ver)
 
         edited_file = process_yaml_content(final_yaml_path, version, logger)
 
-        # --- DETERMINE WHICH VALIDATIONS TO RUN ---
-        # If Uploading, we force ALL checks to be True for safety.
-        # If Validating, we use the Checkbox values.
+        # Logic for validations
         do_swagger = True if btn_upload else use_swagger
         do_redocly = True if btn_upload else use_redocly
         do_readme  = True if btn_upload else use_readme
@@ -534,7 +527,8 @@ def main():
         if do_readme:
             if has_key:
                 logger.info("🔍 Running ReadMe CLI (v9)...")
-                if run_command([npx_path, "--yes", "rdme@9", "openapi:validate", str(edited_file), "--key", readme_key], logger) != 0: 
+                # --- CHANGE HERE: Split command, REMOVE --key for validation ---
+                if run_command([npx_path, "--yes", "rdme@9", "openapi", "validate", str(edited_file)], logger) != 0: 
                     validation_failed = True
             else:
                 logger.warning("⚠️ Skipping ReadMe CLI validation (No API Key provided).")
@@ -548,14 +542,16 @@ def main():
         else:
             logger.info("✅ Selected validations passed.")
 
-            # Only proceed to upload if the Upload button was clicked
             if btn_upload:
                 logger.info("🚀 Uploading to ReadMe...")
                 with open(edited_file, "r") as f:
                     title = yaml.safe_load(f).get("info", {}).get("title", "")
                 
                 api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
+                
+                # Upload still needs the key
                 cmd = [npx_path, "--yes", "rdme@9", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+                
                 if api_id: cmd.extend(["--id", api_id])
                 
                 if run_command(cmd, logger) == 0:
