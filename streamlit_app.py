@@ -228,15 +228,27 @@ def delete_repo(repo_dir):
 
 # --- File Operations ---
 
-def prepare_files(filename, paths, workspace, logger):
-    if filename in ["field", "field_value"]:
-        source = Path(paths['logical']) / f"{filename}.yaml"
-    else:
-        source = Path(paths['specs']) / f"{filename}.yaml"
+def prepare_files(filename, paths, workspace, dependency_list, logger):
+    """
+    Locates the selected file in either the main or secondary path,
+    copies it to workspace, and copies any requested dependency folders.
+    """
+    source = None
+    
+    # 1. Search in Main Specs Path
+    main_candidate = Path(paths['specs']) / f"{filename}.yaml"
+    if main_candidate.exists():
+        source = main_candidate
+    
+    # 2. Search in Secondary Path (if configured)
+    elif paths.get('secondary') and (Path(paths['secondary']) / f"{filename}.yaml").exists():
+        source = Path(paths['secondary']) / f"{filename}.yaml"
 
-    if not source.exists():
-        logger.error(f"❌ Source file not found: {source}")
-        logger.info(f"ℹ️ Searched in: {source.parent}")
+    if not source:
+        logger.error(f"❌ Source file '{filename}.yaml' not found.")
+        logger.info(f"ℹ️ Searched in: {paths['specs']}")
+        if paths.get('secondary'):
+            logger.info(f"ℹ️ Searched in: {paths['secondary']}")
         st.stop()
 
     workspace_path = Path(workspace)
@@ -245,14 +257,20 @@ def prepare_files(filename, paths, workspace, logger):
     shutil.copy(source, destination)
     logger.info(f"📂 Copied main YAML to workspace: {destination.name}")
 
-    for folder in ["common", "data_products"]:
-        src_folder = Path(paths['specs']) / folder
-        dest_folder = workspace_path / folder
+    # 3. Copy Dependencies (Generic List)
+    # Assumes dependencies are located inside the Main Specs folder
+    for folder in dependency_list:
+        clean_folder = folder.strip()
+        if not clean_folder: continue
+        
+        src_folder = Path(paths['specs']) / clean_folder
+        dest_folder = workspace_path / clean_folder
+        
         if src_folder.exists():
             if dest_folder.exists():
                 shutil.rmtree(dest_folder)
             shutil.copytree(src_folder, dest_folder)
-            logger.info(f"📂 Copied dependency folder: {folder}")
+            logger.info(f"📂 Copied dependency folder: {clean_folder}")
         else:
             logger.warning(f"⚠️ Dependency folder not found: {src_folder}")
 
@@ -293,12 +311,16 @@ def check_and_create_version(version, api_key, base_url, logger, create_if_missi
     except Exception as e:
         logger.error(f"❌ Network error checking version: {e}")
 
-def process_yaml_content(file_path, version, logger):
+def process_yaml_content(file_path, version, api_domain, logger):
+    """
+    Injects ReadMe extensions and updates server URL with user-defined domain.
+    """
     logger.info("🛠️ Injecting x-readme extensions and updating server info...")
     try:
         with open(file_path, "r") as f:
             data = yaml.safe_load(f)
 
+        # Inject x-readme
         if "openapi" in data:
             pos = list(data.keys()).index("openapi")
             items = list(data.items())
@@ -306,13 +328,17 @@ def process_yaml_content(file_path, version, logger):
             data = dict(items)
         
         data["info"]["version"] = version
+        
+        # Use user-provided domain or default
+        domain = api_domain if api_domain else "example.com"
+        
         if "servers" not in data or not data["servers"]:
-            data["servers"] = [{"url": "https://alation_domain", "variables": {}}]
+            data["servers"] = [{"url": f"https://{domain}", "variables": {}}]
 
         if "variables" not in data["servers"][0]:
             data["servers"][0]["variables"] = {}
             
-        data["servers"][0]["variables"]["base-url"] = {"default": "alation_domain"}
+        data["servers"][0]["variables"]["base-url"] = {"default": domain}
         data["servers"][0]["variables"]["protocol"] = {"default": "https"}
 
         edited_path = file_path.parent / (file_path.stem + "_edited.yaml")
@@ -323,7 +349,7 @@ def process_yaml_content(file_path, version, logger):
     except Exception as e:
         logger.error(f"❌ Error processing YAML: {e}")
         st.stop()
-
+        
 def get_api_id(api_name, version, api_key, base_url, logger):
     if not api_key: return None
     
@@ -381,32 +407,54 @@ def main():
         else: st.sidebar.warning(msg)
     
     repo_url = st.sidebar.text_input("Git Repo HTTPS URL", key="repo_url")
-    
-    # --- Branch Input ---
-    branch_name = st.sidebar.text_input("Branch Name", value="main", help="Enter the specific feature branch name (e.g., feature/login-update)")
+    branch_name = st.sidebar.text_input("Branch Name", value="main", help="Enter the specific feature branch name")
 
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token")
 
     st.sidebar.button("🔒 Clear Credentials", on_click=clear_credentials)
 
-    st.sidebar.subheader("Internal Paths")
-    spec_rel_path = st.sidebar.text_input("Specs Path (relative to repo)", value="django/static/swagger/specs")
-    abs_spec_path = Path(repo_path) / spec_rel_path
-    abs_logical_path = abs_spec_path / "logical_metadata"
+    # --- UPDATED INTERNAL PATHS & SETTINGS ---
+    st.sidebar.subheader("Internal Paths & Settings")
     
-    paths = {"repo": repo_path, "specs": abs_spec_path, "logical": abs_logical_path}
+    # 1. Main Specs Path (Required)
+    spec_rel_path = st.sidebar.text_input("Main Specs Path (relative to repo)", value="specs", help="Folder containing your main OpenAPI files.") 
+    
+    # 2. Secondary Specs Path (Optional)
+    secondary_rel_path = st.sidebar.text_input("Secondary Specs Path (Optional)", value="", help="Another folder to scan for YAML files. Leave empty if not needed.")
+    
+    # 3. Configurable Dependencies
+    dep_input = st.sidebar.text_input("Dependency Folders", value="common", help="Comma-separated list of folders to copy (e.g., 'common, types').")
+    dependency_list = [x.strip() for x in dep_input.split(",")]
+    
+    # 4. Configurable Domain
+    api_domain = st.sidebar.text_input("API Base Domain", value="api.example.com", help="Domain to inject into servers.url")
+
+    # --- Path Setup ---
+    abs_spec_path = Path(repo_path) / spec_rel_path
+    
+    paths = {"repo": repo_path, "specs": abs_spec_path}
+    
+    # Only add secondary path if user provided it
+    if secondary_rel_path:
+        paths["secondary"] = Path(repo_path) / secondary_rel_path
+
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 OpenAPI Spec Validator v1.0")
+    st.title("🚀 OpenAPI Spec Validator")
     
     col1, col2 = st.columns(2)
     with col1:
         files = []
+        # Scan Main Path
         if abs_spec_path.exists():
-            files = [f.stem for f in abs_spec_path.glob("*.yaml")]
-            files += [f.stem for f in abs_logical_path.glob("*.yaml")]
-            files = sorted(list(set(files)))
+            files.extend([f.stem for f in abs_spec_path.glob("*.yaml")])
+        
+        # Scan Secondary Path (if exists)
+        if "secondary" in paths and paths["secondary"].exists():
+            files.extend([f.stem for f in paths["secondary"].glob("*.yaml")])
+            
+        files = sorted(list(set(files)))
         
         if files:
             selected_file = st.selectbox("Select OpenAPI File", files)
@@ -432,7 +480,6 @@ def main():
     st.markdown("---")
     
     c_btn1, c_btn2 = st.columns(2)
-    # The trigger buttons
     btn_validate_selected = c_btn1.button("🔍 Validate Selected", use_container_width=True)
     btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Runs Swagger + ReadMe checks, then uploads.")
 
@@ -473,9 +520,8 @@ def main():
 
     # --- EXECUTION LOGIC ---
     if btn_validate_selected or btn_upload:
-        st.session_state.logs = [] # Clear old logs
+        st.session_state.logs = [] 
         
-        # Setup Logger
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
         if logger.handlers: logger.handlers = []
@@ -483,7 +529,6 @@ def main():
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
-        # Validate Environment
         strict_key_req = True if btn_upload else False
         has_key = validate_env(readme_key, required=strict_key_req)
         
@@ -496,26 +541,25 @@ def main():
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
 
         logger.info("📂 Preparing workspace...")
-        final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
+        # --- PASS CONFIGURABLE DEPENDENCIES ---
+        final_yaml_path = prepare_files(selected_file, paths, workspace_dir, dependency_list, logger)
 
         if has_key:
             create_ver = True if btn_upload else False
             check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=create_ver)
 
-        edited_file = process_yaml_content(final_yaml_path, version, logger)
+        # --- PASS CONFIGURABLE DOMAIN ---
+        edited_file = process_yaml_content(final_yaml_path, version, api_domain, logger)
 
-        # --- UPDATED VALIDATION LOGIC ---
+        # Validation Selection Logic
         if btn_upload:
-            # If UPLOADING: Run Swagger + ReadMe. Skip Redocly (Too strict).
             do_swagger = True
             do_redocly = False
             do_readme = True
         else:
-            # If VALIDATING: Use checkboxes
             do_swagger = use_swagger
             do_redocly = use_redocly
             do_readme = use_readme
-        # --------------------------------
 
         validation_failed = False
         
