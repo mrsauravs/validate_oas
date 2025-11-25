@@ -117,14 +117,15 @@ def analyze_errors_with_ai(log_content, api_key, model_name):
 
 # --- Git Logic ---
 
-def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
-    logger.info("🚀 Starting Git Operation...")
+def setup_git_repo(repo_url, repo_dir, git_token, git_username, branch_name, logger):
+    logger.info(f"🚀 Starting Git Operation for branch: {branch_name}...")
     
     repo_path = Path(repo_dir)
     repo_url = repo_url.strip().strip('"').strip("'")
     git_username = git_username.strip().strip('"').strip("'")
     git_token = git_token.strip().strip('"').strip("'")
 
+    # Clean URL Logic
     if repo_url.count("https://") > 1:
         match = re.search(r"(https://github\.com/.*)$", repo_url)
         if match:
@@ -159,11 +160,14 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
     clean_env["GIT_CONFIG_SYSTEM"] = null_path
     clean_env["GIT_TERMINAL_PROMPT"] = "0"
 
+    git_args = ["-c", "core.askPass=echo"] 
+
     if not repo_path.exists():
-        logger.info(f"⬇️ Cloning from: {masked_repo_url}")
-        git_args = ["-c", "core.askPass=echo"] 
+        # --- CLONE NEW REPO ---
+        logger.info(f"⬇️ Cloning branch '{branch_name}' from: {masked_repo_url}")
         try:
-            cmd = ["git"] + git_args + ["clone", "--depth", "1", auth_repo_url, str(repo_path)]
+            # Added --branch and branch_name here
+            cmd = ["git"] + git_args + ["clone", "--depth", "1", "--branch", branch_name, auth_repo_url, str(repo_path)]
             result = subprocess.run(cmd, capture_output=True, text=True, env=clean_env)
             
             if result.returncode != 0:
@@ -181,23 +185,36 @@ def setup_git_repo(repo_url, repo_dir, git_token, git_username, logger):
                 else:
                     safe_err = result.stderr.replace(git_token, "***").replace(git_username, "****")
                     logger.error(f"❌ Git Output:\n{safe_err}")
-                    st.error("Git Clone Failed.")
+                    st.error(f"Git Clone Failed for branch '{branch_name}'. Check if branch exists.")
                     st.stop()
             logger.info("✅ Repo cloned successfully.")
         except Exception as e:
             logger.error(f"❌ System Error: {e}")
             st.stop()
     else:
-        logger.info(f"🔄 Pulling latest changes...")
+        # --- UPDATE EXISTING REPO ---
+        logger.info(f"🔄 Switching/Updating to branch '{branch_name}'...")
         try:
+            # 1. Update Remote URL (in case tokens changed)
             subprocess.run(["git", "-C", str(repo_path), "remote", "set-url", "origin", auth_repo_url], 
                          check=True, capture_output=True, env=clean_env)
-            cmd = ["git", "-C", str(repo_path), "pull"]
-            subprocess.run(cmd, check=True, capture_output=True, env=clean_env)
-            logger.info("✅ Repo updated successfully.")
+            
+            # 2. Fetch the specific branch
+            subprocess.run(["git", "-C", str(repo_path), "fetch", "origin", branch_name],
+                         check=True, capture_output=True, env=clean_env)
+
+            # 3. Checkout the branch
+            subprocess.run(["git", "-C", str(repo_path), "checkout", branch_name],
+                         check=True, capture_output=True, env=clean_env)
+
+            # 4. Pull latest changes
+            subprocess.run(["git", "-C", str(repo_path), "pull", "origin", branch_name],
+                         check=True, capture_output=True, env=clean_env)
+            
+            logger.info(f"✅ Successfully switched to '{branch_name}'.")
         except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Pull failed: {e}")
-            logger.warning("⚠️ Continuing with existing files...")
+            logger.error(f"❌ Git Operation failed: {e}")
+            logger.warning("⚠️ Attempting to continue with current files (might be outdated)...")
 
 def delete_repo(repo_dir):
     path = Path(repo_dir)
@@ -364,6 +381,7 @@ def main():
         else: st.sidebar.warning(msg)
     
     repo_url = st.sidebar.text_input("Git Repo HTTPS URL", key="repo_url")
+    branch_name = st.sidebar.text_input("Branch Name", value="main", help="Enter the specific feature branch name")
     git_user = st.sidebar.text_input("Git Username", key="git_user", type="password", help="GitHub Handle")
     git_token = st.sidebar.text_input("Git Token/PAT", key="git_token", type="password", help="Personal Access Token")
 
@@ -473,7 +491,7 @@ def main():
             logger.error("❌ NodeJS/npx not found.")
             st.stop()
 
-        setup_git_repo(repo_url, repo_path, git_token, git_user, logger)
+        setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
 
         logger.info("📂 Preparing workspace...")
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, logger)
