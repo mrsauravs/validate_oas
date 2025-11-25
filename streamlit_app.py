@@ -490,22 +490,41 @@ def main():
     if st.session_state.logs:
         log_container.code("\n".join(st.session_state.logs), language="text")
 
-    col_d1, col_d2 = st.columns([1, 4])
+    # Create columns for buttons: Download Log | Download YAML | Clear Logs
+    col_d1, col_d2, col_d3 = st.columns([1, 1, 3])
+    
     with col_d1:
         download_placeholder = st.empty()
         if st.session_state.logs:
             unique_key = f"dl_btn_persist_{len(st.session_state.logs)}"
             download_placeholder.download_button(
-                label="📥 Download Log File",
+                label="📥 Download Logs",
                 data="\n".join(st.session_state.logs),
                 file_name="openapi_upload.log",
                 mime="text/plain",
                 key=unique_key
             )
+            
+    # --- NEW: YAML DOWNLOAD BUTTON ---
     with col_d2:
+        if 'last_edited_file' in st.session_state and st.session_state.last_edited_file:
+            edited_path = Path(st.session_state.last_edited_file)
+            if edited_path.exists():
+                with open(edited_path, "r") as f:
+                    yaml_content = f.read()
+                
+                st.download_button(
+                    label="📄 Download Edited YAML",
+                    data=yaml_content,
+                    file_name=edited_path.name,
+                    mime="application/x-yaml",
+                    key="dl_yaml_btn"
+                )
+
+    with col_d3:
         if st.session_state.logs:
              st.button("🗑️ Clear Logs", on_click=clear_logs)
-
+            
     # AI Analysis Section
     if st.session_state.logs and gemini_key:
         if st.button(f"🤖 Analyze Logs with {ai_model}"):
@@ -521,6 +540,7 @@ def main():
     # --- EXECUTION LOGIC ---
     if btn_validate_selected or btn_upload:
         st.session_state.logs = [] 
+        st.session_state.last_edited_file = None # Reset previous file
         
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
@@ -541,15 +561,15 @@ def main():
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
 
         logger.info("📂 Preparing workspace...")
-        # --- PASS CONFIGURABLE DEPENDENCIES ---
         final_yaml_path = prepare_files(selected_file, paths, workspace_dir, dependency_list, logger)
 
         if has_key:
             create_ver = True if btn_upload else False
             check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=create_ver)
 
-        # --- PASS CONFIGURABLE DOMAIN ---
+        # PROCESS YAML & SAVE PATH TO SESSION STATE
         edited_file = process_yaml_content(final_yaml_path, version, api_domain, logger)
+        st.session_state.last_edited_file = str(edited_file) # Store path for download button
 
         # Validation Selection Logic
         if btn_upload:
