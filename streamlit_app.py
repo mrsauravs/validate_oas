@@ -388,6 +388,7 @@ def main():
     if 'git_user' not in st.session_state: st.session_state.git_user = ""
     if 'git_token' not in st.session_state: st.session_state.git_token = ""
     if 'repo_url' not in st.session_state: st.session_state.repo_url = ""
+    if 'last_edited_file' not in st.session_state: st.session_state.last_edited_file = None
     
     if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-pro"
 
@@ -414,46 +415,31 @@ def main():
 
     st.sidebar.button("🔒 Clear Credentials", on_click=clear_credentials)
 
-    # --- UPDATED INTERNAL PATHS & SETTINGS ---
+    # --- INTERNAL PATHS & SETTINGS ---
     st.sidebar.subheader("Internal Paths & Settings")
-    
-    # 1. Main Specs Path (Required)
     spec_rel_path = st.sidebar.text_input("Main Specs Path (relative to repo)", value="specs", help="Folder containing your main OpenAPI files.") 
-    
-    # 2. Secondary Specs Path (Optional)
     secondary_rel_path = st.sidebar.text_input("Secondary Specs Path (Optional)", value="", help="Another folder to scan for YAML files. Leave empty if not needed.")
-    
-    # 3. Configurable Dependencies
     dep_input = st.sidebar.text_input("Dependency Folders", value="common", help="Comma-separated list of folders to copy (e.g., 'common, types').")
     dependency_list = [x.strip() for x in dep_input.split(",")]
-    
-    # 4. Configurable Domain
     api_domain = st.sidebar.text_input("API Base Domain", value="api.example.com", help="Domain to inject into servers.url")
 
-    # --- Path Setup ---
+    # Path Setup
     abs_spec_path = Path(repo_path) / spec_rel_path
-    
     paths = {"repo": repo_path, "specs": abs_spec_path}
-    
-    # Only add secondary path if user provided it
     if secondary_rel_path:
         paths["secondary"] = Path(repo_path) / secondary_rel_path
-
     workspace_dir = "./temp_workspace"
 
     st.title("🚀 OpenAPI Spec Validator")
     
+    # --- FILE SELECTION ---
     col1, col2 = st.columns(2)
     with col1:
         files = []
-        # Scan Main Path
         if abs_spec_path.exists():
             files.extend([f.stem for f in abs_spec_path.glob("*.yaml")])
-        
-        # Scan Secondary Path (if exists)
         if "secondary" in paths and paths["secondary"].exists():
             files.extend([f.stem for f in paths["secondary"].glob("*.yaml")])
-            
         files = sorted(list(set(files)))
         
         if files:
@@ -466,35 +452,34 @@ def main():
     with col2:
         version = st.text_input("API Version", "1.0")
 
-    # --- Checkbox UI ---
+    # --- CHECKBOX UI ---
     st.markdown("### 🚀 Validation Settings")
-    
     c_check1, c_check2, c_check3 = st.columns(3)
-    with c_check1:
-        use_swagger = st.checkbox("Swagger CLI", value=True)
-    with c_check2:
-        use_redocly = st.checkbox("Redocly CLI", value=True)
-    with c_check3:
-        use_readme = st.checkbox("ReadMe CLI", value=False, help="Requires ReadMe API Key")
+    with c_check1: use_swagger = st.checkbox("Swagger CLI", value=True)
+    with c_check2: use_redocly = st.checkbox("Redocly CLI", value=True)
+    with c_check3: use_readme = st.checkbox("ReadMe CLI", value=False, help="Requires ReadMe API Key")
     
     st.markdown("---")
     
     c_btn1, c_btn2 = st.columns(2)
     btn_validate_selected = c_btn1.button("🔍 Validate Selected", use_container_width=True)
-    btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True, help="Runs Swagger + ReadMe checks, then uploads.")
+    btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True)
 
-    # --- PERSISTENT LOG DISPLAY ---
+    # --- 1. SETUP UI LAYOUT (Must happen BEFORE logic) ---
     st.markdown("### 📜 Execution Logs")
     
+    # Container for log text
     log_container = st.empty()
     if st.session_state.logs:
         log_container.code("\n".join(st.session_state.logs), language="text")
 
-    # Create columns for buttons: Download Log | Download YAML | Clear Logs
+    # Columns for Buttons
     col_d1, col_d2, col_d3 = st.columns([1, 1, 3])
     
+    # Placeholder for Live Download Button (Managed by Handler)
     with col_d1:
         download_placeholder = st.empty()
+        # Restore download button if logs exist (persistence)
         if st.session_state.logs:
             unique_key = f"dl_btn_persist_{len(st.session_state.logs)}"
             download_placeholder.download_button(
@@ -504,43 +489,11 @@ def main():
                 mime="text/plain",
                 key=unique_key
             )
-            
-    # --- NEW: YAML DOWNLOAD BUTTON ---
-    with col_d2:
-        if 'last_edited_file' in st.session_state and st.session_state.last_edited_file:
-            edited_path = Path(st.session_state.last_edited_file)
-            if edited_path.exists():
-                with open(edited_path, "r") as f:
-                    yaml_content = f.read()
-                
-                st.download_button(
-                    label="📄 Download Edited YAML",
-                    data=yaml_content,
-                    file_name=edited_path.name,
-                    mime="application/x-yaml",
-                    key="dl_yaml_btn"
-                )
 
-    with col_d3:
-        if st.session_state.logs:
-             st.button("🗑️ Clear Logs", on_click=clear_logs)
-            
-    # AI Analysis Section
-    if st.session_state.logs and gemini_key:
-        if st.button(f"🤖 Analyze Logs with {ai_model}"):
-            with st.spinner("Analyzing errors..."):
-                log_text = "\n".join(st.session_state.logs)
-                analysis = analyze_errors_with_ai(log_text, gemini_key, ai_model)
-                if analysis:
-                    st.markdown("### 🤖 AI Fix Suggestion")
-                    st.markdown(analysis)
-    elif st.session_state.logs and not gemini_key:
-        st.info("💡 Enter a Gemini API Key in the sidebar to unlock error analysis.")
-
-    # --- EXECUTION LOGIC ---
+    # --- 2. EXECUTION LOGIC ---
     if btn_validate_selected or btn_upload:
         st.session_state.logs = [] 
-        st.session_state.last_edited_file = None # Reset previous file
+        st.session_state.last_edited_file = None
         
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
@@ -567,11 +520,11 @@ def main():
             create_ver = True if btn_upload else False
             check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=create_ver)
 
-        # PROCESS YAML & SAVE PATH TO SESSION STATE
+        # PROCESS & STORE EDITED FILE
         edited_file = process_yaml_content(final_yaml_path, version, api_domain, logger)
-        st.session_state.last_edited_file = str(edited_file) # Store path for download button
+        st.session_state.last_edited_file = str(edited_file)
 
-        # Validation Selection Logic
+        # Validation Logic
         if btn_upload:
             do_swagger = True
             do_redocly = False
@@ -583,45 +536,40 @@ def main():
 
         validation_failed = False
         
-        # 1. SWAGGER CLI
+        # 1. SWAGGER
         if do_swagger:
             logger.info("🔍 Running Swagger CLI...")
             if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: 
                 validation_failed = True
         
-        # 2. REDOCLY CLI
+        # 2. REDOCLY
         if do_redocly:
-            logger.info("🔍 Running Redocly CLI (Pinned v1.25.0)...")
+            logger.info("🔍 Running Redocly CLI...")
             if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: 
                 validation_failed = True
             
-        # 3. README CLI
+        # 3. README
         if do_readme:
             if has_key:
                 logger.info("🔍 Running ReadMe CLI (v9)...")
                 if run_command([npx_path, "--yes", "rdme@9", "openapi", "validate", str(edited_file)], logger) != 0: 
                     validation_failed = True
             else:
-                logger.warning("⚠️ Skipping ReadMe CLI validation (No API Key provided).")
+                logger.warning("⚠️ Skipping ReadMe CLI validation.")
 
-        # --- RESULT HANDLING ---
+        # RESULT
         if validation_failed:
             logger.error("❌ Validation failed.")
             st.error("Validation Failed.")
-            if btn_upload:
-                st.error("Aborting upload due to validation errors.")
+            if btn_upload: st.error("Aborting upload.")
         else:
             logger.info("✅ Selected validations passed.")
-
             if btn_upload:
                 logger.info("🚀 Uploading to ReadMe...")
                 with open(edited_file, "r") as f:
                     title = yaml.safe_load(f).get("info", {}).get("title", "")
-                
                 api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
-                
                 cmd = [npx_path, "--yes", "rdme@9", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
-                
                 if api_id: cmd.extend(["--id", api_id])
                 
                 if run_command(cmd, logger) == 0:
@@ -631,6 +579,42 @@ def main():
                     logger.error("❌ Upload failed.")
             else:
                 st.success("Validation Check Complete.")
+
+    # --- 3. POST-EXECUTION UI RENDERING ---
+    # Now that logic is done and session_state is updated, render the buttons
+    
+    # YAML Download Button
+    with col_d2:
+        if 'last_edited_file' in st.session_state and st.session_state.last_edited_file:
+            edited_path = Path(st.session_state.last_edited_file)
+            if edited_path.exists():
+                with open(edited_path, "r") as f:
+                    yaml_content = f.read()
+                
+                st.download_button(
+                    label="📄 Download Edited YAML",
+                    data=yaml_content,
+                    file_name=edited_path.name,
+                    mime="application/x-yaml",
+                    key="dl_yaml_btn"
+                )
+
+    # Clear Logs Button
+    with col_d3:
+        if st.session_state.logs:
+             st.button("🗑️ Clear Logs", on_click=clear_logs)
+
+    # AI Analysis Section
+    if st.session_state.logs and gemini_key:
+        if st.button(f"🤖 Analyze Logs with {ai_model}"):
+            with st.spinner("Analyzing errors..."):
+                log_text = "\n".join(st.session_state.logs)
+                analysis = analyze_errors_with_ai(log_text, gemini_key, ai_model)
+                if analysis:
+                    st.markdown("### 🤖 AI Fix Suggestion")
+                    st.markdown(analysis)
+    elif st.session_state.logs and not gemini_key:
+        st.info("💡 Enter a Gemini API Key in the sidebar to unlock error analysis.")
 
 if __name__ == "__main__":
     main()
