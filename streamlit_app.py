@@ -115,6 +115,60 @@ def analyze_errors_with_ai(log_content, api_key, model_name):
     except Exception as e:
         return f"Exception calling AI: {e}"
 
+def apply_ai_fixes(original_path, log_content, api_key, model_name):
+    """
+    Sends the YAML and logs to Gemini and asks for a fully corrected YAML file.
+    Returns the content of the fixed YAML.
+    """
+    if not api_key:
+        return None
+    
+    try:
+        with open(original_path, 'r') as f:
+            yaml_content = f.read()
+
+        client = genai.Client(api_key=api_key)
+        
+        prompt = f"""
+        You are an expert OpenAPI Repair Agent. 
+        
+        CONTEXT:
+        I have an OpenAPI YAML file that failed validation.
+        
+        THE LOGS:
+        {log_content}
+        
+        THE YAML FILE:
+        {yaml_content}
+        
+        TASK:
+        1. Fix the errors listed in the logs.
+        2. PRESERVE strictly all 'x-readme' extensions, 'servers' configurations, and 'info' metadata. Do not remove them.
+        3. Return the FULL, VALID YAML file. 
+        4. Do not include any markdown formatting, explanations, or chat. JUST THE YAML CODE.
+        5. If you must use markdown, wrap the code in ```yaml ... ``` blocks only.
+        """
+        
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[prompt]
+        )
+        
+        # Extract YAML from Markdown block if present
+        cleaned_text = response.text
+        match = re.search(r'```yaml\n(.*?)\n```', cleaned_text, re.DOTALL)
+        if match:
+            return match.group(1)
+        
+        # Fallback: remove generic code blocks if no language specified
+        match_generic = re.search(r'```\n(.*?)\n```', cleaned_text, re.DOTALL)
+        if match_generic:
+            return match_generic.group(1)
+
+        return cleaned_text
+    except Exception as e:
+        return None
+
 # --- Git Logic ---
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, branch_name, logger):
@@ -388,7 +442,10 @@ def main():
     if 'git_user' not in st.session_state: st.session_state.git_user = ""
     if 'git_token' not in st.session_state: st.session_state.git_token = ""
     if 'repo_url' not in st.session_state: st.session_state.repo_url = ""
+    
+    # Track files
     if 'last_edited_file' not in st.session_state: st.session_state.last_edited_file = None
+    if 'corrected_file' not in st.session_state: st.session_state.corrected_file = None
     
     if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-pro"
 
@@ -461,9 +518,21 @@ def main():
     
     st.markdown("---")
     
-    c_btn1, c_btn2 = st.columns(2)
-    btn_validate_selected = c_btn1.button("🔍 Validate Selected", use_container_width=True)
-    btn_upload = c_btn2.button("🚀 Upload to ReadMe", type="primary", use_container_width=True)
+    # --- UPLOAD SOURCE SELECTION ---
+    # Determine options based on whether a corrected file exists
+    upload_options = ["Original (Edited)"]
+    if st.session_state.corrected_file:
+        upload_options.append("AI Corrected")
+    
+    c_select, c_actions = st.columns([1, 2])
+    
+    with c_select:
+        upload_choice = st.radio("File to Upload:", upload_options, horizontal=True)
+
+    with c_actions:
+        c_btn1, c_btn2 = st.columns(2)
+        btn_validate_selected = c_btn1.button("🔍 Validate Selected", use_container_width=True)
+        btn_upload = c_btn2.button(f"🚀 Upload: {upload_choice}", type="primary", use_container_width=True)
 
     # --- 1. SETUP UI LAYOUT (Must happen BEFORE logic) ---
     st.markdown("### 📜 Execution Logs")
@@ -476,10 +545,8 @@ def main():
     # Columns for Buttons
     col_d1, col_d2, col_d3 = st.columns([1, 1, 3])
     
-    # Placeholder for Live Download Button (Managed by Handler)
     with col_d1:
         download_placeholder = st.empty()
-        # Restore download button if logs exist (persistence)
         if st.session_state.logs:
             unique_key = f"dl_btn_persist_{len(st.session_state.logs)}"
             download_placeholder.download_button(
@@ -494,6 +561,7 @@ def main():
     if btn_validate_selected or btn_upload:
         st.session_state.logs = [] 
         st.session_state.last_edited_file = None
+        st.session_state.corrected_file = None # Reset corrected file on new run
         
         logger = logging.getLogger("streamlit_logger")
         logger.setLevel(logging.INFO)
@@ -502,6 +570,7 @@ def main():
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
         logger.addHandler(handler)
 
+        # Determine Strict Key Req (Only strict if uploading)
         strict_key_req = True if btn_upload else False
         has_key = validate_env(readme_key, required=strict_key_req)
         
@@ -524,6 +593,16 @@ def main():
         edited_file = process_yaml_content(final_yaml_path, version, api_domain, logger)
         st.session_state.last_edited_file = str(edited_file)
 
+        # --- UPLOAD PATH LOGIC ---
+        # If user clicked Upload, we need to decide WHICH file to validate/upload.
+        # If they chose "AI Corrected" but it doesn't exist yet (logic edge case), fallback to Edited.
+        target_file_to_process = edited_file
+        
+        if btn_upload and upload_choice == "AI Corrected" and st.session_state.corrected_file:
+             logger.info(f"👉 Processing AI Corrected File: {Path(st.session_state.corrected_file).name}")
+             target_file_to_process = Path(st.session_state.corrected_file)
+        # -------------------------
+
         # Validation Logic
         if btn_upload:
             do_swagger = True
@@ -539,20 +618,20 @@ def main():
         # 1. SWAGGER
         if do_swagger:
             logger.info("🔍 Running Swagger CLI...")
-            if run_command([npx_path, "--yes", "swagger-cli", "validate", str(edited_file)], logger) != 0: 
+            if run_command([npx_path, "--yes", "swagger-cli", "validate", str(target_file_to_process)], logger) != 0: 
                 validation_failed = True
         
         # 2. REDOCLY
         if do_redocly:
             logger.info("🔍 Running Redocly CLI...")
-            if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(edited_file)], logger) != 0: 
+            if run_command([npx_path, "--yes", "@redocly/cli@1.25.0", "lint", str(target_file_to_process)], logger) != 0: 
                 validation_failed = True
             
         # 3. README
         if do_readme:
             if has_key:
                 logger.info("🔍 Running ReadMe CLI (v9)...")
-                if run_command([npx_path, "--yes", "rdme@9", "openapi", "validate", str(edited_file)], logger) != 0: 
+                if run_command([npx_path, "--yes", "rdme@9", "openapi", "validate", str(target_file_to_process)], logger) != 0: 
                     validation_failed = True
             else:
                 logger.warning("⚠️ Skipping ReadMe CLI validation.")
@@ -566,31 +645,32 @@ def main():
             logger.info("✅ Selected validations passed.")
             if btn_upload:
                 logger.info("🚀 Uploading to ReadMe...")
-                with open(edited_file, "r") as f:
+                # Read title from the file we are actually uploading
+                with open(target_file_to_process, "r") as f:
                     title = yaml.safe_load(f).get("info", {}).get("title", "")
+                
                 api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
-                cmd = [npx_path, "--yes", "rdme@9", "openapi", str(edited_file), "--useSpecVersion", "--key", readme_key, "--version", version]
+                
+                cmd = [npx_path, "--yes", "rdme@9", "openapi", str(target_file_to_process), "--useSpecVersion", "--key", readme_key, "--version", version]
                 if api_id: cmd.extend(["--id", api_id])
                 
                 if run_command(cmd, logger) == 0:
                     logger.info("🎉 Upload Successful!")
-                    st.success("Done!")
+                    st.success(f"Done! Uploaded: {upload_choice}")
                 else:
                     logger.error("❌ Upload failed.")
             else:
                 st.success("Validation Check Complete.")
 
     # --- 3. POST-EXECUTION UI RENDERING ---
-    # Now that logic is done and session_state is updated, render the buttons
     
-    # YAML Download Button
+    # Column 2: Download Edited (Original)
     with col_d2:
         if 'last_edited_file' in st.session_state and st.session_state.last_edited_file:
             edited_path = Path(st.session_state.last_edited_file)
             if edited_path.exists():
                 with open(edited_path, "r") as f:
                     yaml_content = f.read()
-                
                 st.download_button(
                     label="📄 Download Edited YAML",
                     data=yaml_content,
@@ -599,22 +679,62 @@ def main():
                     key="dl_yaml_btn"
                 )
 
-    # Clear Logs Button
+    # Column 3: Clear Logs
     with col_d3:
         if st.session_state.logs:
              st.button("🗑️ Clear Logs", on_click=clear_logs)
 
-    # AI Analysis Section
+    # --- AI ANALYSIS & REPAIR SECTION ---
     if st.session_state.logs and gemini_key:
-        if st.button(f"🤖 Analyze Logs with {ai_model}"):
-            with st.spinner("Analyzing errors..."):
+        st.markdown("### 🤖 AI Assistance")
+        
+        c_ai1, c_ai2 = st.columns(2)
+        
+        # 1. Analyze Button
+        if c_ai1.button(f"🧐 Analyze Errors"):
+            with st.spinner("Analyzing..."):
                 log_text = "\n".join(st.session_state.logs)
                 analysis = analyze_errors_with_ai(log_text, gemini_key, ai_model)
                 if analysis:
-                    st.markdown("### 🤖 AI Fix Suggestion")
                     st.markdown(analysis)
+
+        # 2. Fix Button
+        if c_ai2.button(f"✨ Attempt Auto-Fix"):
+            if 'last_edited_file' in st.session_state and st.session_state.last_edited_file:
+                with st.spinner("Generating fix..."):
+                    log_text = "\n".join(st.session_state.logs)
+                    fixed_content = apply_ai_fixes(st.session_state.last_edited_file, log_text, gemini_key, ai_model)
+                    
+                    if fixed_content:
+                        # Save the fixed file
+                        original_path = Path(st.session_state.last_edited_file)
+                        corrected_path = original_path.parent / (original_path.stem.replace("_edited", "") + "_corrected.yaml")
+                        
+                        with open(corrected_path, "w") as f:
+                            f.write(fixed_content)
+                        
+                        st.session_state.corrected_file = str(corrected_path)
+                        st.success("✅ Fix generated! You can now select 'AI Corrected' in the upload options above.")
+                        st.rerun() # Rerun to update the Radio Button options immediately
+                    else:
+                        st.error("Failed to generate a fix.")
+    
+    # Download Button for Corrected File (If exists)
+    if st.session_state.corrected_file:
+        corr_path = Path(st.session_state.corrected_file)
+        if corr_path.exists():
+            with open(corr_path, "r") as f:
+                fixed_data = f.read()
+            st.download_button(
+                label="✨ Download Corrected YAML",
+                data=fixed_data,
+                file_name=corr_path.name,
+                mime="application/x-yaml",
+                key="dl_corr_btn"
+            )
+
     elif st.session_state.logs and not gemini_key:
-        st.info("💡 Enter a Gemini API Key in the sidebar to unlock error analysis.")
+        st.info("💡 Enter a Gemini API Key in the sidebar to unlock AI tools.")
 
 if __name__ == "__main__":
     main()
