@@ -46,7 +46,6 @@ class StreamlitLogHandler(logging.Handler):
             )
 
 # --- Helper Functions ---
-
 def get_npx_path():
     return shutil.which("npx")
 
@@ -242,10 +241,6 @@ def check_and_create_version(version, api_key, base_url, logger, create_if_missi
         logger.error(f"❌ Version check failed: {e}")
 
 def get_api_id(api_name, version, api_key, base_url, logger):
-    """
-    Smart ID Lookup: Checks exact match, then checks fuzzy match (token set).
-    Returns (id, matched_title).
-    """
     if not api_key: return None, None
     headers = {"Authorization": f"Basic {api_key}", "Accept": "application/json", "x-readme-version": version}
     
@@ -257,17 +252,14 @@ def get_api_id(api_name, version, api_key, base_url, logger):
         res = requests.get(f"{base_url}/api-specification", headers=headers, params={"perPage": 100})
         if res.status_code == 200:
             apis = res.json()
-            # 1. Exact Match
             for api in apis:
                 if api["title"] == api_name:
                     logger.info(f"✅ Exact Match: {api['_id']}")
                     return api["_id"], api["title"]
-            # 2. Fuzzy Match
             for api in apis:
                 if target_tokens == tokenize(api["title"]):
                     logger.info(f"✨ Smart Match: '{api['title']}' (ID: {api['_id']})")
                     return api["_id"], api["title"]
-            
             logger.warning(f"⚠️ No match found for '{api_name}'")
         else:
             logger.error(f"❌ API Error: {res.status_code}")
@@ -287,10 +279,9 @@ def clear_logs():
 def main():
     st.sidebar.title("⚙️ Configuration")
     
-    # Session State
     for k in ['readme_key', 'gemini_key', 'git_user', 'git_token', 'repo_url', 'last_edited_file', 'corrected_file']:
         if k not in st.session_state: st.session_state[k] = "" if 'file' not in k else None
-    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-flash"
+    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-pro"
 
     readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password")
     with st.sidebar.expander("🤖 AI Config", expanded=True):
@@ -341,7 +332,7 @@ def main():
     with ch3: use_rd = st.checkbox("ReadMe CLI", False)
     
     st.markdown("---")
-    u_opts = ["Original"]
+    u_opts = ["Original (Edited)"]
     if st.session_state.corrected_file: u_opts.append("AI Corrected")
     
     cs1, cs2 = st.columns([1, 2])
@@ -375,7 +366,7 @@ def main():
 
         has_key = validate_env(readme_key, required=bool(b_up))
         npx = get_npx_path()
-        base_url = "https://dash.readme.com/api/v1" # Clean URL variable
+        base_url = "https://dash.readme.com/api/v1"
 
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
         logger.info("📂 Preparing workspace...")
@@ -385,10 +376,10 @@ def main():
         
         edited = process_yaml_content(final_yaml, version, domain, logger)
         st.session_state.last_edited_file = str(edited)
+        target = edited.resolve() # Use Absolute Path
 
-        target = edited
         if b_up and u_choice == "AI Corrected" and st.session_state.corrected_file:
-            target = Path(st.session_state.corrected_file)
+            target = Path(st.session_state.corrected_file).resolve()
 
         do_s = True if b_up else use_sw
         do_r = False if b_up else use_re
@@ -402,8 +393,9 @@ def main():
             logger.info("🔍 Running Redocly...")
             if run_command([npx, "--yes", "@redocly/cli@1.25.0", "lint", str(target)], logger) != 0: fail = True
         if do_rm and has_key:
-            logger.info("🔍 Running ReadMe CLI...")
-            if run_command([npx, "--yes", "rdme@9", "openapi", "validate", str(target)], logger) != 0: fail = True
+            logger.info("🔍 Running ReadMe CLI (v8)...")
+            # NOTE: rdme@8 uses 'openapi:validate' (with colon)
+            if run_command([npx, "--yes", "rdme@8", "openapi:validate", str(target)], logger) != 0: fail = True
 
         if fail:
             logger.error("❌ Validation Failed.")
@@ -416,18 +408,21 @@ def main():
                     ydata = yaml.safe_load(f)
                     ytitle = ydata.get("info", {}).get("title", "")
                 
-                # Smart Match Logic
                 api_id, matched_title = get_api_id(ytitle, version, readme_key, base_url, logger)
                 
-                # Auto-Correct Title in YAML if fuzzy match found
                 if api_id and matched_title and matched_title != ytitle:
                     logger.info(f"🔧 Correcting Title: '{ytitle}' -> '{matched_title}'")
                     ydata["info"]["title"] = matched_title
                     with open(target, "w") as f: yaml.dump(ydata, f, sort_keys=False)
 
-                cmd = [npx, "--yes", "rdme@9", "openapi", str(target), "--useSpecVersion", "--key", readme_key, "--version", version]
+                # NOTE: rdme@8 command structure
+                cmd = [npx, "--yes", "rdme@8", "openapi", str(target), "--useSpecVersion", "--version", version]
+                
+                # Order: --id then --key (matching local script logic)
                 if api_id: cmd.extend(["--id", api_id])
-                else: logger.warning("⚠️ No ID found. Attempting new creation.")
+                else: logger.warning("⚠️ No ID found. Attempting creation.")
+                
+                cmd.extend(["--key", readme_key])
 
                 if run_command(cmd, logger) == 0:
                     logger.info("🎉 Uploaded!")
