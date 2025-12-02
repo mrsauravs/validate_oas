@@ -57,17 +57,20 @@ def validate_env(api_key, required=True):
         return False
     return True
 
-def run_command(command_list, log_logger):
+def run_command(command_list, log_logger, cwd=None):
     try:
         cmd_str = " ".join(command_list)
-        log_logger.info(f"Running: {cmd_str}")
+        # Log the directory if we are switching contexts
+        dir_msg = f" (in {cwd})" if cwd else ""
+        log_logger.info(f"Running: {cmd_str}{dir_msg}")
         
         process = subprocess.Popen(
             command_list,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            encoding='utf-8'
+            encoding='utf-8',
+            cwd=cwd  # <--- NEW: Set the working directory
         )
         for line in process.stdout:
             clean = line.strip()
@@ -281,7 +284,7 @@ def main():
     
     for k in ['readme_key', 'gemini_key', 'git_user', 'git_token', 'repo_url', 'last_edited_file', 'corrected_file']:
         if k not in st.session_state: st.session_state[k] = "" if 'file' not in k else None
-    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-pro"
+    if 'ai_model' not in st.session_state: st.session_state.ai_model = "gemini-2.5-flash"
 
     readme_key = st.sidebar.text_input("ReadMe API Key", key="readme_key", type="password")
     with st.sidebar.expander("🤖 AI Config", expanded=True):
@@ -373,10 +376,12 @@ def main():
         final_yaml = prepare_files(selected_file, paths, workspace, deps, logger)
         
         if has_key: check_and_create_version(version, readme_key, base_url, logger, bool(b_up))
+
+        abs_workspace_path = Path(workspace_dir).resolve()
         
         edited = process_yaml_content(final_yaml, version, domain, logger)
         st.session_state.last_edited_file = str(edited)
-        target = edited.resolve() # Use Absolute Path
+        target = edited.resolve()
 
         if b_up and u_choice == "AI Corrected" and st.session_state.corrected_file:
             target = Path(st.session_state.corrected_file).resolve()
@@ -386,16 +391,19 @@ def main():
         do_rm = True if b_up else use_rd
         fail = False
 
+        # --- UPDATED VALIDATION CALLS (Using cwd=abs_workspace_path) ---
         if do_s:
             logger.info("🔍 Running Swagger...")
-            if run_command([npx, "--yes", "swagger-cli", "validate", str(target)], logger) != 0: fail = True
+            # Use target.name so it looks in the current CWD
+            if run_command([npx, "--yes", "swagger-cli", "validate", target.name], logger, cwd=abs_workspace_path) != 0: fail = True
+        
         if do_r:
             logger.info("🔍 Running Redocly...")
-            if run_command([npx, "--yes", "@redocly/cli@1.25.0", "lint", str(target)], logger) != 0: fail = True
+            if run_command([npx, "--yes", "@redocly/cli@1.25.0", "lint", target.name], logger, cwd=abs_workspace_path) != 0: fail = True
+            
         if do_rm and has_key:
             logger.info("🔍 Running ReadMe CLI (v8)...")
-            # NOTE: rdme@8 uses 'openapi:validate' (with colon)
-            if run_command([npx, "--yes", "rdme@8", "openapi:validate", str(target)], logger) != 0: fail = True
+            if run_command([npx, "--yes", "rdme@8", "openapi:validate", target.name], logger, cwd=abs_workspace_path) != 0: fail = True
 
         if fail:
             logger.error("❌ Validation Failed.")
@@ -415,16 +423,15 @@ def main():
                     ydata["info"]["title"] = matched_title
                     with open(target, "w") as f: yaml.dump(ydata, f, sort_keys=False)
 
-                # NOTE: rdme@8 command structure
-                cmd = [npx, "--yes", "rdme@8", "openapi", str(target), "--useSpecVersion", "--version", version]
+                # --- UPDATED UPLOAD COMMAND (Using cwd=abs_workspace_path) ---
+                cmd = [npx, "--yes", "rdme@8", "openapi", target.name, "--useSpecVersion", "--version", version]
                 
-                # Order: --id then --key (matching local script logic)
                 if api_id: cmd.extend(["--id", api_id])
                 else: logger.warning("⚠️ No ID found. Attempting creation.")
                 
                 cmd.extend(["--key", readme_key])
 
-                if run_command(cmd, logger) == 0:
+                if run_command(cmd, logger, cwd=abs_workspace_path) == 0:
                     logger.info("🎉 Uploaded!")
                     st.success("Success!")
                 else:
