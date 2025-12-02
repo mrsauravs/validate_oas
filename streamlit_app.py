@@ -426,7 +426,7 @@ def main():
         logger.info("📂 Preparing workspace...")
         final_yaml = prepare_files(selected_file, paths, workspace_dir, dependency_list, logger)
 
-        if has_key: check_and_create_version(version, readme_key, "[https://dash.readme.com/api/v1](https://dash.readme.com/api/v1)", logger, create_if_missing=bool(btn_upload))
+        if has_key: check_and_create_version(version, readme_key, "https://dash.readme.com/api/v1", logger, create_if_missing=bool(btn_upload))
 
         edited_file = process_yaml_content(final_yaml, version, api_domain, logger)
         st.session_state.last_edited_file = str(edited_file)
@@ -463,7 +463,7 @@ def main():
                     title = yaml.safe_load(f).get("info", {}).get("title", "")
                 
                 # REPLICATED LOGIC FROM ORIGINAL SCRIPT
-                api_id = get_api_id(title, version, readme_key, "[https://dash.readme.com/api/v1](https://dash.readme.com/api/v1)", logger)
+                api_id = get_api_id(title, version, readme_key, "https://dash.readme.com/api/v1", logger)
                 
                 cmd = [npx, "--yes", "rdme@9", "openapi", str(target_file), "--useSpecVersion", "--key", readme_key, "--version", version]
                 if api_id: cmd.extend(["--id", api_id])
