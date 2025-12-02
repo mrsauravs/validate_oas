@@ -57,10 +57,10 @@ def validate_env(api_key, required=True):
         return False
     return True
 
+# UPDATED: Now accepts 'cwd' argument
 def run_command(command_list, log_logger, cwd=None):
     try:
         cmd_str = " ".join(command_list)
-        # Log the directory if we are switching contexts
         dir_msg = f" (in {cwd})" if cwd else ""
         log_logger.info(f"Running: {cmd_str}{dir_msg}")
         
@@ -70,7 +70,7 @@ def run_command(command_list, log_logger, cwd=None):
             stderr=subprocess.STDOUT,
             text=True,
             encoding='utf-8',
-            cwd=cwd  # <--- NEW: Set the working directory
+            cwd=cwd # Run command in specific directory
         )
         for line in process.stdout:
             clean = line.strip()
@@ -314,7 +314,7 @@ def main():
     abs_spec = Path(repo_path) / spec_rel
     paths = {"repo": repo_path, "specs": abs_spec}
     if sec_rel: paths["secondary"] = Path(repo_path) / sec_rel
-    workspace = "./temp_workspace"
+    workspace_dir = "./temp_workspace" # UPDATED VARIABLE NAME
 
     st.title("🚀 OpenAPI Spec Validator")
     
@@ -373,11 +373,12 @@ def main():
 
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
         logger.info("📂 Preparing workspace...")
-        final_yaml = prepare_files(selected_file, paths, workspace, deps, logger)
+        final_yaml = prepare_files(selected_file, paths, workspace_dir, deps, logger)
+        
+        # Resolve Workspace Path for CWD
+        abs_workspace_path = Path(workspace_dir).resolve()
         
         if has_key: check_and_create_version(version, readme_key, base_url, logger, bool(b_up))
-
-        abs_workspace_path = Path(workspace_dir).resolve()
         
         edited = process_yaml_content(final_yaml, version, domain, logger)
         st.session_state.last_edited_file = str(edited)
@@ -394,7 +395,7 @@ def main():
         # --- UPDATED VALIDATION CALLS (Using cwd=abs_workspace_path) ---
         if do_s:
             logger.info("🔍 Running Swagger...")
-            # Use target.name so it looks in the current CWD
+            # Use target.name so it looks in the CWD
             if run_command([npx, "--yes", "swagger-cli", "validate", target.name], logger, cwd=abs_workspace_path) != 0: fail = True
         
         if do_r:
@@ -423,7 +424,6 @@ def main():
                     ydata["info"]["title"] = matched_title
                     with open(target, "w") as f: yaml.dump(ydata, f, sort_keys=False)
 
-                # --- UPDATED UPLOAD COMMAND (Using cwd=abs_workspace_path) ---
                 cmd = [npx, "--yes", "rdme@8", "openapi", target.name, "--useSpecVersion", "--version", version]
                 
                 if api_id: cmd.extend(["--id", api_id])
