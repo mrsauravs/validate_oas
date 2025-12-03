@@ -57,7 +57,6 @@ def validate_env(api_key, required=True):
         return False
     return True
 
-# UPDATED: Now accepts 'cwd' argument
 def run_command(command_list, log_logger, cwd=None):
     try:
         cmd_str = " ".join(command_list)
@@ -70,7 +69,7 @@ def run_command(command_list, log_logger, cwd=None):
             stderr=subprocess.STDOUT,
             text=True,
             encoding='utf-8',
-            cwd=cwd # Run command in specific directory
+            cwd=cwd 
         )
         for line in process.stdout:
             clean = line.strip()
@@ -270,6 +269,29 @@ def get_api_id(api_name, version, api_key, base_url, logger):
         logger.error(f"❌ ID Lookup Error: {e}")
     return None, None
 
+def create_new_api_via_requests(file_path, version, api_key, base_url, logger):
+    """
+    Directly uploads a new spec to ReadMe via requests to bypass CLI prompts.
+    """
+    logger.info("📤 Creating NEW API definition directly via API...")
+    headers = {"Authorization": f"Basic {api_key}", "x-readme-version": version}
+    
+    try:
+        with open(file_path, 'rb') as f:
+            files = {'spec': (file_path.name, f)}
+            res = requests.post(f"{base_url}/api-specification", headers=headers, files=files)
+            
+        if res.status_code in [200, 201]:
+            new_id = res.json().get("_id")
+            logger.info(f"✅ Successfully Created! ID: {new_id}")
+            return new_id
+        else:
+            logger.error(f"❌ API Upload Failed: {res.text}")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Upload Exception: {e}")
+        return None
+
 def clear_creds():
     for k in ['readme_key', 'git_user', 'git_token', 'logs']:
         if k in st.session_state: del st.session_state[k]
@@ -314,7 +336,7 @@ def main():
     abs_spec = Path(repo_path) / spec_rel
     paths = {"repo": repo_path, "specs": abs_spec}
     if sec_rel: paths["secondary"] = Path(repo_path) / sec_rel
-    workspace_dir = "./temp_workspace" # UPDATED VARIABLE NAME
+    workspace_dir = "./temp_workspace" 
 
     st.title("🚀 OpenAPI Spec Validator")
     
@@ -375,7 +397,6 @@ def main():
         logger.info("📂 Preparing workspace...")
         final_yaml = prepare_files(selected_file, paths, workspace_dir, deps, logger)
         
-        # Resolve Workspace Path for CWD
         abs_workspace_path = Path(workspace_dir).resolve()
         
         if has_key: check_and_create_version(version, readme_key, base_url, logger, bool(b_up))
@@ -392,10 +413,8 @@ def main():
         do_rm = True if b_up else use_rd
         fail = False
 
-        # --- UPDATED VALIDATION CALLS (Using cwd=abs_workspace_path) ---
         if do_s:
             logger.info("🔍 Running Swagger...")
-            # Use target.name so it looks in the CWD
             if run_command([npx, "--yes", "swagger-cli", "validate", target.name], logger, cwd=abs_workspace_path) != 0: fail = True
         
         if do_r:
@@ -424,18 +443,26 @@ def main():
                     ydata["info"]["title"] = matched_title
                     with open(target, "w") as f: yaml.dump(ydata, f, sort_keys=False)
 
-                cmd = [npx, "--yes", "rdme@8", "openapi", target.name, "--useSpecVersion", "--version", version]
-                
-                if api_id: cmd.extend(["--id", api_id])
-                else: logger.warning("⚠️ No ID found. Attempting creation.")
-                
-                cmd.extend(["--key", readme_key])
-
-                if run_command(cmd, logger, cwd=abs_workspace_path) == 0:
-                    logger.info("🎉 Uploaded!")
-                    st.success("Success!")
+                if api_id:
+                    # Case 1: Existing API -> Update via CLI
+                    cmd = [npx, "--yes", "rdme@8", "openapi", target.name, "--useSpecVersion", "--version", version, "--id", api_id, "--key", readme_key]
+                    if run_command(cmd, logger, cwd=abs_workspace_path) == 0:
+                        logger.info("🎉 Updated Existing API!")
+                        st.success("Success!")
+                    else:
+                        logger.error("❌ Upload Failed.")
                 else:
-                    logger.error("❌ Upload Failed.")
+                    # Case 2: New API -> Create via Bundle + Request
+                    logger.warning("⚠️ No ID found. Treating as NEW API.")
+                    logger.info("📦 Bundling references...")
+                    bundled_name = f"{target.stem}_bundled.yaml"
+                    if run_command([npx, "--yes", "swagger-cli", "bundle", target.name, "-o", bundled_name, "-t", "yaml"], logger, cwd=abs_workspace_path) == 0:
+                        bundled_path = abs_workspace_path / bundled_name
+                        create_new_api_via_requests(bundled_path, version, readme_key, base_url, logger)
+                        st.success("Success!")
+                    else:
+                        logger.error("❌ Bundling failed.")
+
             else:
                 st.success("Done.")
 
