@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import base64
+import hashlib
 import urllib.parse
 import re
 from pathlib import Path
@@ -268,21 +269,49 @@ YAML:
     return candidate, None
 
 
-def check_spec_against_style_guide(yaml_content, provider, api_key, model_name):
-    """Explicit, rule-by-rule AI review against OPENAPI_STYLE_GUIDE (not generic advice)."""
+def build_active_style_guide_text(mode, custom_text):
+    """
+    Combines the built-in OPENAPI_STYLE_GUIDE and/or a user-supplied custom
+    style guide (uploaded or pasted as Markdown) into one block of text to
+    hand to the AI reviewer, based on the selected mode:
+    "Built-in only" | "Custom only" | "Both (built-in + custom)".
+    """
+    parts = []
+    custom_text = (custom_text or "").strip()
+
+    if mode in ("Built-in only", "Both (built-in + custom)"):
+        parts.append("### Built-in Style Guide\n" + render_style_guide_prompt())
+
+    if mode in ("Custom only", "Both (built-in + custom)") and custom_text:
+        parts.append("### Custom Style Guide\n" + custom_text)
+
+    if not parts:
+        # Fallback: never send an empty guide (e.g. "Custom only" selected but
+        # nothing was actually uploaded/pasted yet).
+        parts.append("### Built-in Style Guide\n" + render_style_guide_prompt())
+
+    return "\n\n".join(parts)
+
+
+def check_spec_against_style_guide(yaml_content, provider, api_key, model_name, style_guide_text):
+    """Explicit, rule-by-rule AI review against the active style guide (not generic advice)."""
     prompt = f"""
-You are an OpenAPI spec reviewer. Check the OpenAPI document below AGAINST EACH numbered rule
-in the style guide. For every rule, respond with one line:
+You are an OpenAPI spec reviewer. Check the OpenAPI document below AGAINST EVERY rule or
+guideline in the style guide provided below, whether it's numbered or written as prose. Treat
+each distinct guideline as one checkable item.
 
-- PASS — rule number and a 3-8 word reason, OR
-- FAIL — rule number, the exact location (path/operation/schema/property), and a one-sentence fix.
+For every item, respond with one line:
+- PASS — a short label/number for the rule and a 3-8 word reason, OR
+- FAIL — a short label/number for the rule, the exact location in the spec (path/operation/schema/property), and a one-sentence fix.
 
-Only list FAIL items in detail; for PASS items a single compact line is enough. Group your
-output under the same category headings as the style guide. Be specific — cite actual paths,
-operationIds, and property names from the document, not generic advice.
+Only elaborate on FAIL items; PASS items can stay a single compact line. Group your output under
+the same section/category headings used in the style guide below (if it has a "Built-in Style
+Guide" and a "Custom Style Guide" section, review the spec against both and keep your results
+grouped under those same two headings). Be specific — cite actual paths, operationIds, and
+property names from the document, not generic advice.
 
-## Style Guide Rules
-{render_style_guide_prompt()}
+## Style Guide
+{style_guide_text}
 
 ## OpenAPI Document
 ```yaml
@@ -1013,8 +1042,64 @@ def main():
 
     st.title("🚀 OpenAPI Spec Validator")
 
-    with st.expander("📐 View baked-in OpenAPI style guide"):
+    if "custom_style_guide_text" not in st.session_state:
+        st.session_state.custom_style_guide_text = ""
+    if "custom_style_guide_name" not in st.session_state:
+        st.session_state.custom_style_guide_name = None
+    if "custom_style_guide_hash" not in st.session_state:
+        st.session_state.custom_style_guide_hash = None
+    if "style_guide_mode" not in st.session_state:
+        st.session_state.style_guide_mode = "Built-in only"
+
+    with st.expander("📐 OpenAPI Style Guide (built-in, and/or your own)"):
         st.markdown(render_style_guide_markdown())
+
+        st.markdown("---")
+        st.markdown(
+            "**Bring your own style guide.** Upload a Markdown/text file describing a different "
+            "or house-specific set of OpenAPI conventions (e.g. your own team's naming rules, a "
+            "different vendor's guide, an internal playbook), or paste/edit one directly below. "
+            "The uploaded content is loaded into the text box so you can tweak it before use — "
+            "nothing is written back to the file itself."
+        )
+
+        uploaded_guide = st.file_uploader(
+            "Upload a custom style guide (.md / .txt)",
+            type=["md", "markdown", "txt"],
+            key="custom_style_guide_upload",
+        )
+        if uploaded_guide is not None:
+            # BUG FIX: dedup was keyed on filename alone, so re-uploading the
+            # same filename with edited content (a very likely workflow —
+            # tweak your local style-guide.md, re-upload) silently did
+            # nothing, since the name hadn't changed. Hash the actual bytes
+            # instead, so any content change is picked up regardless of name.
+            raw_bytes = uploaded_guide.read()
+            content_hash = hashlib.md5(raw_bytes).hexdigest()
+            if content_hash != st.session_state.get("custom_style_guide_hash"):
+                try:
+                    st.session_state.custom_style_guide_text = raw_bytes.decode("utf-8", errors="replace")
+                    st.session_state.custom_style_guide_name = uploaded_guide.name
+                    st.session_state.custom_style_guide_hash = content_hash
+                    st.success(f"Loaded '{uploaded_guide.name}' — edit below if needed.")
+                except Exception as e:
+                    st.error(f"Could not read uploaded file: {e}")
+
+        st.text_area(
+            "Custom style guide content (editable)",
+            key="custom_style_guide_text",
+            height=200,
+            placeholder="# My Team's OpenAPI Style Guide\n\n- All paths must be kebab-case...\n- ...",
+        )
+
+        st.selectbox(
+            "Which style guide should 'Check Style Guide' use?",
+            ["Built-in only", "Custom only", "Both (built-in + custom)"],
+            key="style_guide_mode",
+            help="Applies to the '📐 Check Style Guide' AI action further down, after you run Validate/Upload.",
+        )
+        if st.session_state.style_guide_mode != "Built-in only" and not st.session_state.custom_style_guide_text.strip():
+            st.warning("No custom style guide text yet — upload a file or paste one above, or the check will fall back to built-in only.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1246,12 +1331,15 @@ def main():
                         st.success("Fixed! Choose 'AI Corrected' above.")
                         st.rerun()
 
-        if ca3.button("📐 Check Style Guide"):
+        if ca3.button(f"📐 Check Style Guide ({st.session_state.style_guide_mode})"):
             if st.session_state.last_edited_file:
                 with st.spinner("Checking against style guide..."):
                     p = Path(st.session_state.last_edited_file)
                     yaml_text = p.read_text()
-                    review, err = check_spec_against_style_guide(yaml_text, active_provider, active_ai_key, active_model)
+                    style_guide_text = build_active_style_guide_text(
+                        st.session_state.style_guide_mode, st.session_state.custom_style_guide_text
+                    )
+                    review, err = check_spec_against_style_guide(yaml_text, active_provider, active_ai_key, active_model, style_guide_text)
                     if err:
                         st.error(f"Style guide check failed: {err}")
                     elif review:
