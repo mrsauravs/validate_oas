@@ -18,7 +18,7 @@ from google import genai
 # =============================================================================
 st.set_page_config(
     page_title="OpenAPI Spec Validator v2.0",
-    page_icon="📘",
+    page_icon=":material/api:",
     layout="wide"
 )
 
@@ -339,7 +339,8 @@ class StreamlitLogHandler(logging.Handler):
         if self.download_placeholder:
             unique_key = f"log_dl_rt_{len(st.session_state.logs)}"
             self.download_placeholder.download_button(
-                label="📥 Download Log File",
+                label="Download Log File",
+                icon=":material/download:",
                 data="\n".join(st.session_state.logs),
                 file_name="openapi_upload.log",
                 mime="text/plain",
@@ -368,7 +369,7 @@ def _node_major_version(node_path):
         return None
 
 
-@st.cache_resource(show_spinner="🔧 Preparing Node.js toolchain (first run only)...")
+@st.cache_resource(show_spinner=":material/build: Preparing Node.js toolchain (first run only)...")
 def ensure_npx():
     """Returns a usable npx path with Node >= MIN_NODE_MAJOR, or None if unavailable."""
     system_node = shutil.which("node")
@@ -409,7 +410,7 @@ def ensure_npx():
 def validate_env(api_key, required=True):
     if not api_key:
         if required:
-            st.error("❌ ReadMe API Key is missing. Please enter it in the sidebar.")
+            st.error("ReadMe API Key is missing. Please enter it in the sidebar.", icon=":material/key:")
             st.stop()
         return False
     return True
@@ -419,7 +420,7 @@ def run_command(command_list, log_logger, cwd=None):
     # BUG FIX: guard against a None entry (e.g. npx not resolved) instead of
     # letting subprocess.Popen raise an opaque TypeError.
     if not command_list or command_list[0] is None:
-        log_logger.error("❌ Command failed: required executable (npx) was not found.")
+        log_logger.error("Command failed: required executable (npx) was not found.")
         return 1
     try:
         cmd_str = " ".join(command_list)
@@ -441,7 +442,7 @@ def run_command(command_list, log_logger, cwd=None):
         process.wait()
         return process.returncode
     except Exception as e:
-        log_logger.error(f"❌ Command failed: {e}")
+        log_logger.error(f"Command failed: {e}")
         return 1
 
 
@@ -495,10 +496,10 @@ def git_clone_or_switch(repo_url, repo_dir, git_token, git_username, branch_name
         result = subprocess.run(cmd, capture_output=True, text=True, env=clean_env)
         if result.returncode != 0:
             return False, f"Git Clone Failed: {result.stderr.strip()[:500]}", lines
-        lines.append("✅ Repo cloned successfully.")
+        lines.append("Repo cloned successfully.")
         return True, f"Cloned and checked out '{branch_name}'.", lines
 
-    lines.append(f"🔄 Switching to branch '{branch_name}'...")
+    lines.append(f"Switching to branch '{branch_name}'...")
     # BUG FIX (found while adding branch switching): the initial clone above
     # is shallow AND single-branch, so only the originally-cloned branch gets
     # a local ref. A later `git fetch origin <branch>` (no refspec) only
@@ -518,18 +519,18 @@ def git_clone_or_switch(repo_url, repo_dir, git_token, git_username, branch_name
         result = subprocess.run(step, capture_output=True, text=True, env=clean_env)
         if result.returncode != 0:
             return False, f"Git Update Failed on `{' '.join(step[2:])}`: {result.stderr.strip()[:500]}", lines
-    lines.append(f"✅ Switched to '{branch_name}'.")
+    lines.append(f"Switched to '{branch_name}'.")
     return True, f"Switched to '{branch_name}'.", lines
 
 
 def setup_git_repo(repo_url, repo_dir, git_token, git_username, branch_name, logger):
     """Logger-driven wrapper used inside the main Validate/Upload pipeline."""
-    logger.info(f"🚀 Starting Git Operation for branch: {branch_name}...")
+    logger.info(f"Starting Git Operation for branch: {branch_name}...")
     success, summary, detail_lines = git_clone_or_switch(repo_url, repo_dir, git_token, git_username, branch_name)
     for line in detail_lines:
         logger.info(line)
     if not success:
-        logger.error(f"❌ {summary}")
+        logger.error(f"{summary}")
         st.stop()
 
 
@@ -618,14 +619,14 @@ def prepare_files(filename, paths, workspace, dependency_list, logger):
 
     if not source:
         tried = ", ".join(f"{filename}{ext}" for ext in SPEC_EXTENSIONS)
-        logger.error(f"❌ Source file not found. Tried: {tried}")
+        logger.error(f"Source file not found. Tried: {tried}")
         st.stop()
 
     dest_dir = Path(workspace)
     dest_dir.mkdir(parents=True, exist_ok=True)
     destination = dest_dir / source.name
     shutil.copy(source, destination)
-    logger.info(f"📂 Copied {source.suffix.lstrip('.').upper()} spec to workspace: {destination.name}")
+    logger.info(f"Copied {source.suffix.lstrip('.').upper()} spec to workspace: {destination.name}")
 
     for folder in dependency_list:
         clean = folder.strip()
@@ -637,12 +638,12 @@ def prepare_files(filename, paths, workspace, dependency_list, logger):
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
-            logger.info(f"📂 Copied dependency: {clean}")
+            logger.info(f"Copied dependency: {clean}")
     return destination
 
 
 def process_yaml_content(file_path, version, api_domain, logger):
-    logger.info("🛠️ Injecting extensions...")
+    logger.info("Injecting extensions...")
     try:
         with open(file_path, "r") as f:
             data = yaml.safe_load(f)
@@ -652,7 +653,7 @@ def process_yaml_content(file_path, version, api_domain, logger):
         # (e.g. a bare list), or a spec missing "info" would raise an
         # unhandled AttributeError/TypeError deep inside this function.
         if not isinstance(data, dict):
-            logger.error("❌ YAML Process Error: the file did not parse into a YAML mapping (object) at the top level.")
+            logger.error("YAML Process Error: the file did not parse into a YAML mapping (object) at the top level.")
             st.stop()
 
         if "openapi" in data:
@@ -662,7 +663,7 @@ def process_yaml_content(file_path, version, api_domain, logger):
             data = dict(items)
 
         if "info" not in data or not isinstance(data.get("info"), dict):
-            logger.warning("⚠️ Spec is missing a valid 'info' section — creating a minimal one.")
+            logger.warning("Spec is missing a valid 'info' section — creating a minimal one.")
             data["info"] = {"title": file_path.stem, "version": version}
 
         data["info"]["version"] = version
@@ -680,10 +681,10 @@ def process_yaml_content(file_path, version, api_domain, logger):
         edited_path = file_path.parent / (file_path.stem + "_edited.yaml")
         with open(edited_path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
-        logger.info(f"📝 Edited YAML saved: {edited_path.name}")
+        logger.info(f"Edited YAML saved: {edited_path.name}")
         return edited_path
     except Exception as e:
-        logger.error(f"❌ YAML Process Error: {e}")
+        logger.error(f"YAML Process Error: {e}")
         st.stop()
 
 
@@ -749,42 +750,42 @@ def check_and_create_readme_version(version, api_key, base_url, mode_conf, logge
     headers = {**readme_headers(api_key, mode_conf), "Accept": "application/json"}
 
     if mode_conf["id"] == "v1":
-        logger.info(f"🔎 Checking version '{version}'...")
+        logger.info(f"Checking version '{version}'...")
         try:
             res = requests.get(f"{base_url}/version", headers=headers)
             if res.status_code == 200:
                 versions = res.json()
                 if any(v["version"] == version for v in versions):
-                    logger.info(f"✅ Version '{version}' exists.")
+                    logger.info(f"Version '{version}' exists.")
                     return
                 if create_if_missing:
-                    logger.info(f"⚠️ Creating version '{version}'...")
+                    logger.info(f"Creating version '{version}'...")
                     fork_from = versions[0]["version"] if versions else "latest"
                     create_res = requests.post(
                         f"{base_url}/version", headers=headers,
                         json={"version": version, "is_stable": False, "from": fork_from},
                     )
                     if create_res.status_code not in (200, 201):
-                        logger.error(f"❌ Version creation failed ({create_res.status_code}): {create_res.text[:300]}")
+                        logger.error(f"Version creation failed ({create_res.status_code}): {create_res.text[:300]}")
             elif res.status_code == 401:
-                logger.error("❌ ReadMe auth failed (401). Double-check your API key.")
+                logger.error("ReadMe auth failed (401). Double-check your API key.")
             else:
-                logger.error(f"❌ Version check failed ({res.status_code}): {res.text[:300]}")
+                logger.error(f"Version check failed ({res.status_code}): {res.text[:300]}")
         except Exception as e:
-            logger.error(f"❌ Version check failed: {e}")
+            logger.error(f"Version check failed: {e}")
 
     else:  # v2 — ReadMe Refactored branches
-        logger.info(f"🔎 Checking branch '{version}'...")
+        logger.info(f"Checking branch '{version}'...")
         try:
             res = requests.get(f"{base_url}/branches", headers=headers, params={"prefix": version})
             if res.status_code == 200:
                 body = res.json()
                 branches = body.get("data", body if isinstance(body, list) else [])
                 if any(b.get("name") == version for b in branches):
-                    logger.info(f"✅ Branch '{version}' exists.")
+                    logger.info(f"Branch '{version}' exists.")
                     return
                 if create_if_missing:
-                    logger.info(f"⚠️ Creating branch '{version}'...")
+                    logger.info(f"Creating branch '{version}'...")
                     base_branch = next((b.get("name") for b in branches if b.get("release_stage") == "default"), "stable")
                     create_res = requests.post(
                         f"{base_url}/branches", headers=headers,
@@ -796,15 +797,15 @@ def check_and_create_readme_version(version, api_key, base_url, mode_conf, logge
                         # https://docs.readme.com/main/reference/createbranch and adjust
                         # the JSON body above, or create the branch once manually in the
                         # ReadMe dashboard and re-run.
-                        logger.error(f"❌ Branch creation failed ({create_res.status_code}): {create_res.text[:300]}")
+                        logger.error(f"Branch creation failed ({create_res.status_code}): {create_res.text[:300]}")
             elif res.status_code == 401:
-                logger.error("❌ ReadMe auth failed (401). Double-check your API key.")
+                logger.error("ReadMe auth failed (401). Double-check your API key.")
             elif res.status_code == 404:
-                logger.error("❌ Branches endpoint not found (404) — is this project actually on ReadMe Refactored?")
+                logger.error("Branches endpoint not found (404) — is this project actually on ReadMe Refactored?")
             else:
-                logger.error(f"❌ Branch check failed ({res.status_code}): {res.text[:300]}")
+                logger.error(f"Branch check failed ({res.status_code}): {res.text[:300]}")
         except Exception as e:
-            logger.error(f"❌ Branch check failed: {e}")
+            logger.error(f"Branch check failed: {e}")
 
 
 def get_api_id(api_name, version, api_key, base_url, logger):
@@ -814,7 +815,7 @@ def get_api_id(api_name, version, api_key, base_url, logger):
     headers = {**readme_auth_header(api_key), "Accept": "application/json", "x-readme-version": version}
 
     try:
-        logger.info(f"🔎 Looking for ID for Title: '{api_name}'")
+        logger.info(f"Looking for ID for Title: '{api_name}'")
 
         def tokenize(text):
             return set(re.findall(r"\w+", text.lower()))
@@ -826,25 +827,25 @@ def get_api_id(api_name, version, api_key, base_url, logger):
             apis = res.json()
             for api in apis:
                 if api["title"] == api_name:
-                    logger.info(f"✅ Exact Match: {api['_id']}")
+                    logger.info(f"Exact Match: {api['_id']}")
                     return api["_id"], api["title"]
             for api in apis:
                 if target_tokens == tokenize(api["title"]):
-                    logger.info(f"✨ Smart Match: '{api['title']}' (ID: {api['_id']})")
+                    logger.info(f"Smart Match: '{api['title']}' (ID: {api['_id']})")
                     return api["_id"], api["title"]
-            logger.warning(f"⚠️ No match found for '{api_name}'")
+            logger.warning(f"No match found for '{api_name}'")
         elif res.status_code == 401:
-            logger.error("❌ ReadMe auth failed (401). Double-check your API key.")
+            logger.error("ReadMe auth failed (401). Double-check your API key.")
         else:
-            logger.error(f"❌ API Error: {res.status_code}")
+            logger.error(f"API Error: {res.status_code}")
     except Exception as e:
-        logger.error(f"❌ ID Lookup Error: {e}")
+        logger.error(f"ID Lookup Error: {e}")
     return None, None
 
 
 def create_new_api_via_requests(file_path, version, api_key, base_url, logger):
     """v1-only: directly uploads a new spec to ReadMe via requests to bypass CLI prompts."""
-    logger.info("📤 Creating NEW API definition directly via API...")
+    logger.info("Creating NEW API definition directly via API...")
     headers = {**readme_auth_header(api_key), "x-readme-version": version}
 
     try:
@@ -854,13 +855,13 @@ def create_new_api_via_requests(file_path, version, api_key, base_url, logger):
 
         if res.status_code in [200, 201]:
             new_id = res.json().get("_id")
-            logger.info(f"✅ Successfully Created! ID: {new_id}")
+            logger.info(f"Successfully Created! ID: {new_id}")
             return new_id
         else:
-            logger.error(f"❌ API Upload Failed ({res.status_code}): {res.text[:300]}")
+            logger.error(f"API Upload Failed ({res.status_code}): {res.text[:300]}")
             return None
     except Exception as e:
-        logger.error(f"❌ Upload Exception: {e}")
+        logger.error(f"Upload Exception: {e}")
         return None
 
 
@@ -879,19 +880,19 @@ def get_api_definition_v2(filename, branch, api_key, base_url, logger):
         res = requests.get(url, headers=headers)
         if res.status_code == 200:
             data = res.json().get("data", res.json())
-            logger.info(f"✅ Found existing API definition for '{filename}' on branch '{branch}'.")
+            logger.info(f"Found existing API definition for '{filename}' on branch '{branch}'.")
             return data
         elif res.status_code == 404:
             logger.info(f"ℹ️ No existing API definition for '{filename}' on branch '{branch}' — will create new.")
             return None
         elif res.status_code == 401:
-            logger.error("❌ ReadMe auth failed (401). Double-check your API key.")
+            logger.error("ReadMe auth failed (401). Double-check your API key.")
             return None
         else:
-            logger.warning(f"⚠️ Could not check existing API definition ({res.status_code}): {res.text[:300]}")
+            logger.warning(f"Could not check existing API definition ({res.status_code}): {res.text[:300]}")
             return None
     except Exception as e:
-        logger.warning(f"⚠️ API definition lookup error: {e}")
+        logger.warning(f"API definition lookup error: {e}")
         return None
 
 
@@ -921,7 +922,7 @@ def main():
     if "logs" not in st.session_state:
         st.session_state.logs = []
 
-    st.sidebar.title("⚙️ Configuration")
+    st.sidebar.title(":material/settings: Configuration")
 
     str_defaults = ["readme_key", "gemini_key", "openai_key", "deepseek_key", "git_user", "git_token", "repo_url"]
     for k in str_defaults:
@@ -957,7 +958,7 @@ def main():
     )
     mode_conf = README_MODES[readme_mode_label]
 
-    with st.sidebar.expander("🤖 AI Config", expanded=True):
+    with st.sidebar.expander("AI Config", icon=":material/smart_toy:", expanded=True):
         provider = st.selectbox("AI Provider", list(AI_PROVIDERS.keys()), key="ai_provider")
         active_key_name = provider_key_map[provider]
         active_model_key = provider_model_map[provider]
@@ -975,7 +976,7 @@ def main():
 
     st.sidebar.subheader("Git Config")
     repo_path = st.sidebar.text_input("Local Clone Path", value="./cloned_repo")
-    if st.sidebar.button("🗑️ Delete Repo"):
+    if st.sidebar.button("Delete Repo", icon=":material/delete:"):
         s, m = delete_repo(repo_path)
         if s:
             st.sidebar.success(m)
@@ -994,17 +995,17 @@ def main():
     git_token = st.sidebar.text_input("Git Token", key="git_token", type="password")
 
     gb1, gb2 = st.sidebar.columns(2)
-    if gb1.button("🔎 List Branches", use_container_width=True):
+    if gb1.button("List Branches", icon=":material/search:", use_container_width=True):
         with st.spinner("Fetching branch list..."):
             branches, err = list_remote_branches(repo_url, git_user, git_token)
         if err:
-            st.sidebar.error(err)
+            st.sidebar.error(err, icon=":material/error:")
             st.session_state.pop("remote_branches", None)
         else:
             st.session_state.remote_branches = branches
-            st.sidebar.success(f"Found {len(branches)} branch(es).")
+            st.sidebar.success(f"Found {len(branches)} branch(es).", icon=":material/check_circle:")
 
-    switch_clicked = gb2.button("🔀 Switch Now", use_container_width=True)
+    switch_clicked = gb2.button("Switch Now", icon=":material/sync:", use_container_width=True)
 
     if st.session_state.get("remote_branches"):
         def _use_picked_branch():
@@ -1016,18 +1017,18 @@ def main():
             key="remote_branch_picker",
             label_visibility="collapsed",
         )
-        st.sidebar.button("✅ Use Selected Branch", on_click=_use_picked_branch, use_container_width=True)
+        st.sidebar.button("Use Selected Branch", icon=":material/check_circle:", on_click=_use_picked_branch, use_container_width=True)
 
     if switch_clicked:
         if not (repo_url and git_user and git_token):
-            st.sidebar.error("Fill in Git HTTPS URL, Git User, and Git Token first.")
+            st.sidebar.error("Fill in Git HTTPS URL, Git User, and Git Token first.", icon=":material/error:")
         else:
             with st.spinner(f"Switching local clone to '{branch_name}'..."):
                 success, summary, _ = git_clone_or_switch(repo_url, repo_path, git_token, git_user, branch_name)
             if success:
-                st.sidebar.success(f"✅ {summary}")
+                st.sidebar.success(summary, icon=":material/check_circle:")
             else:
-                st.sidebar.error(f"❌ {summary}")
+                st.sidebar.error(summary, icon=":material/error:")
 
     # Always-visible indicator of what's actually checked out locally right
     # now, so switching branches (here or via Validate/Upload) is never a
@@ -1035,11 +1036,11 @@ def main():
     current_branch, current_commit = get_current_git_branch(repo_path)
     if current_branch:
         commit_suffix = f" ({current_commit})" if current_commit else ""
-        st.sidebar.caption(f"📍 Local clone is on: **{current_branch}**{commit_suffix}")
+        st.sidebar.caption(f":material/location_on: Local clone is on: **{current_branch}**{commit_suffix}")
     else:
-        st.sidebar.caption("📍 No local clone yet — Validate/Upload/Switch Now will clone it.")
+        st.sidebar.caption(":material/location_on: No local clone yet — Validate/Upload/Switch Now will clone it.")
 
-    st.sidebar.button("🔒 Clear Credentials", on_click=clear_creds)
+    st.sidebar.button("Clear Credentials", icon=":material/lock:", on_click=clear_creds)
 
     st.sidebar.subheader("Paths")
     spec_rel = st.sidebar.text_input("Main Specs Path", value="specs")
@@ -1054,7 +1055,7 @@ def main():
         paths["secondary"] = Path(repo_path) / sec_rel
     workspace_dir = "./temp_workspace"
 
-    st.title("🚀 OpenAPI Spec Validator")
+    st.title(":material/api: OpenAPI Spec Validator")
 
     if "custom_style_guide_text" not in st.session_state:
         st.session_state.custom_style_guide_text = ""
@@ -1065,7 +1066,7 @@ def main():
     if "style_guide_mode" not in st.session_state:
         st.session_state.style_guide_mode = "Built-in only"
 
-    with st.expander("📐 OpenAPI Style Guide (built-in, and/or your own)"):
+    with st.expander("OpenAPI Style Guide (built-in, and/or your own)", icon=":material/rule:"):
         st.markdown(render_style_guide_markdown())
 
         st.markdown("---")
@@ -1095,9 +1096,9 @@ def main():
                     st.session_state.custom_style_guide_text = raw_bytes.decode("utf-8", errors="replace")
                     st.session_state.custom_style_guide_name = uploaded_guide.name
                     st.session_state.custom_style_guide_hash = content_hash
-                    st.success(f"Loaded '{uploaded_guide.name}' — edit below if needed.")
+                    st.success(f"Loaded '{uploaded_guide.name}' — edit below if needed.", icon=":material/check_circle:")
                 except Exception as e:
-                    st.error(f"Could not read uploaded file: {e}")
+                    st.error(f"Could not read uploaded file: {e}", icon=":material/error:")
 
         st.text_area(
             "Custom style guide content (editable)",
@@ -1110,10 +1111,10 @@ def main():
             "Which style guide should 'Check Style Guide' use?",
             ["Built-in only", "Custom only", "Both (built-in + custom)"],
             key="style_guide_mode",
-            help="Applies to the '📐 Check Style Guide' AI action further down, after you run Validate/Upload.",
+            help="Applies to the 'Check Style Guide' AI action further down, after you run Validate/Upload.",
         )
         if st.session_state.style_guide_mode != "Built-in only" and not st.session_state.custom_style_guide_text.strip():
-            st.warning("No custom style guide text yet — upload a file or paste one above, or the check will fall back to built-in only.")
+            st.warning("No custom style guide text yet — upload a file or paste one above, or the check will fall back to built-in only.", icon=":material/warning:")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1132,7 +1133,7 @@ def main():
         default_version = "1.0" if mode_conf["id"] == "v1" else "stable"
         version = st.text_input(mode_conf["term_label"], default_version)
 
-    st.markdown("### 🚀 Settings")
+    st.markdown("### :material/tune: Settings")
     ch1, ch2, ch3 = st.columns(3)
     with ch1:
         use_sw = st.checkbox("Swagger CLI (legacy, OAS 3.0 only)", True)
@@ -1151,8 +1152,8 @@ def main():
         u_choice = st.radio("Upload:", u_opts, horizontal=True)
     with cs2:
         cb1, cb2 = st.columns(2)
-        b_val = cb1.button("🔍 Validate", use_container_width=True)
-        b_up = cb2.button(f"🚀 Upload via {mode_conf['rdme_pkg']}: {u_choice}", type="primary", use_container_width=True)
+        b_val = cb1.button("Validate", icon=":material/fact_check:", use_container_width=True)
+        b_up = cb2.button(f"Upload via {mode_conf['rdme_pkg']}: {u_choice}", icon=":material/cloud_upload:", type="primary", use_container_width=True)
 
     # Confirmation line so the active ReadMe API mode is never a guess right
     # before you click Upload — a single mode toggle in the sidebar drives
@@ -1164,7 +1165,7 @@ def main():
         "Change this in the sidebar's **ReadMe API Mode** if it's wrong."
     )
 
-    st.markdown("### 📜 Logs")
+    st.markdown("### :material/terminal: Logs")
     log_con = st.empty()
     if st.session_state.logs:
         log_con.code("\n".join(st.session_state.logs), language="text")
@@ -1173,7 +1174,7 @@ def main():
     with cd1:
         dl_ph = st.empty()
         if st.session_state.logs:
-            dl_ph.download_button("📥 Logs", "\n".join(st.session_state.logs), "log.txt", key=f"dl_{len(st.session_state.logs)}")
+            dl_ph.download_button("Logs", "\n".join(st.session_state.logs), "log.txt", icon=":material/download:", key=f"dl_{len(st.session_state.logs)}")
 
     if b_val or b_up:
         st.session_state.logs = []
@@ -1193,18 +1194,18 @@ def main():
         npx = ensure_npx()
         if npx is None:
             logger.error(
-                "❌ Could not find or provision a Node.js runtime (>= v%d) for npx. "
+                "Could not find or provision a Node.js runtime (>= v%d) for npx. "
                 "Check that packages.txt includes nodejs/npm, and that this container "
                 "has outbound network access to install a local Node via nodeenv." % MIN_NODE_MAJOR
             )
-            st.error("Node.js/npx is unavailable — validation and upload cannot proceed. See logs.")
+            st.error("Node.js/npx is unavailable — validation and upload cannot proceed. See logs.", icon=":material/error:")
             st.stop()
 
         base_url = mode_conf["base_url"]
         rdme_pkg = mode_conf["rdme_pkg"]
 
         setup_git_repo(repo_url, repo_path, git_token, git_user, branch_name, logger)
-        logger.info("📂 Preparing workspace...")
+        logger.info("Preparing workspace...")
         final_yaml = prepare_files(selected_file, paths, workspace_dir, deps, logger)
 
         abs_workspace_path = Path(workspace_dir).resolve()
@@ -1225,27 +1226,27 @@ def main():
         fail = False
 
         if do_s:
-            logger.info("🔍 Running Swagger CLI (legacy validator)...")
+            logger.info("Running Swagger CLI (legacy validator)...")
             if run_command([npx, "--yes", "swagger-cli@4.0.4", "validate", target.name], logger, cwd=abs_workspace_path) != 0:
                 fail = True
 
         if do_r:
-            logger.info("🔍 Running Redocly...")
+            logger.info("Running Redocly...")
             if run_command([npx, "--yes", "@redocly/cli@2.47.0", "lint", target.name], logger, cwd=abs_workspace_path) != 0:
                 fail = True
 
         if do_rm and has_key:
-            logger.info(f"🔍 Running ReadMe CLI ({rdme_pkg})...")
+            logger.info(f"Running ReadMe CLI ({rdme_pkg})...")
             if run_command([npx, "--yes", rdme_pkg, "openapi", "validate", target.name], logger, cwd=abs_workspace_path) != 0:
                 fail = True
 
         if fail:
-            logger.error("❌ Validation Failed.")
-            st.error("Errors found.")
+            logger.error("Validation Failed.")
+            st.error("Errors found.", icon=":material/error:")
         else:
-            logger.info("✅ Validated.")
+            logger.info("Validated.")
             if b_up:
-                logger.info(f"🚀 Uploading via {mode_conf['id']} ({rdme_pkg})...")
+                logger.info(f"Uploading via {mode_conf['id']} ({rdme_pkg})...")
 
                 if mode_conf["id"] == "v1":
                     # --- Classic API v1 flow: hex-ID lookup + title correction ---
@@ -1256,7 +1257,7 @@ def main():
                     api_id, matched_title = get_api_id(ytitle, version, readme_key, base_url, logger)
 
                     if api_id and matched_title and matched_title != ytitle:
-                        logger.info(f"🔧 Correcting Title: '{ytitle}' -> '{matched_title}'")
+                        logger.info(f"Correcting Title: '{ytitle}' -> '{matched_title}'")
                         ydata["info"]["title"] = matched_title
                         with open(target, "w") as f:
                             yaml.dump(ydata, f, sort_keys=False)
@@ -1265,22 +1266,22 @@ def main():
                         # Case 1: Existing API -> Update via CLI
                         cmd = [npx, "--yes", rdme_pkg, "openapi", target.name, "--useSpecVersion", "--version", version, "--id", api_id, "--key", readme_key]
                         if run_command(cmd, logger, cwd=abs_workspace_path) == 0:
-                            logger.info("🎉 Updated Existing API!")
-                            st.success("Success!")
+                            logger.info("Updated Existing API!")
+                            st.success("Success!", icon=":material/check_circle:")
                         else:
-                            logger.error("❌ Upload Failed.")
+                            logger.error("Upload Failed.")
                     else:
                         # Case 2: New API -> Bundle (Redocly, supports OAS 3.0 & 3.1) + Request
-                        logger.warning("⚠️ No ID found. Treating as NEW API.")
-                        logger.info("📦 Bundling references with Redocly...")
+                        logger.warning("No ID found. Treating as NEW API.")
+                        logger.info("Bundling references with Redocly...")
                         bundled_name = f"{target.stem}_bundled.yaml"
                         bundle_cmd = [npx, "--yes", "@redocly/cli@2.47.0", "bundle", target.name, "-o", bundled_name, "--ext", "yaml"]
                         if run_command(bundle_cmd, logger, cwd=abs_workspace_path) == 0:
                             bundled_path = abs_workspace_path / bundled_name
                             create_new_api_via_requests(bundled_path, version, readme_key, base_url, logger)
-                            st.success("Success!")
+                            st.success("Success!", icon=":material/check_circle:")
                         else:
-                            logger.error("❌ Bundling failed.")
+                            logger.error("Bundling failed.")
 
                 else:
                     # --- ReadMe Refactored / API v2 flow ---
@@ -1292,63 +1293,63 @@ def main():
                     # rdme resolves local $refs itself before uploading.
                     existing = get_api_definition_v2(target.name, version, readme_key, base_url, logger)
                     action = "Updating existing" if existing else "Creating new"
-                    logger.info(f"📤 {action} API definition '{target.name}' on branch '{version}'...")
+                    logger.info(f"{action} API definition '{target.name}' on branch '{version}'...")
 
                     cmd = [npx, "--yes", rdme_pkg, "openapi", "upload", target.name, "--branch", version, "--key", readme_key]
                     if run_command(cmd, logger, cwd=abs_workspace_path) == 0:
-                        logger.info("🎉 Upload complete!")
-                        st.success("Success!")
+                        logger.info("Upload complete!")
+                        st.success("Success!", icon=":material/check_circle:")
                     else:
-                        logger.error("❌ Upload Failed.")
+                        logger.error("Upload Failed.")
 
             else:
-                st.success("Done.")
+                st.success("Done.", icon=":material/check_circle:")
 
     with cd2:
         if st.session_state.last_edited_file:
             p = Path(st.session_state.last_edited_file)
             if p.exists():
                 with open(p, "r") as f:
-                    st.download_button("📄 Edited YAML", f.read(), p.name, "application/x-yaml")
+                    st.download_button("Edited YAML", f.read(), p.name, "application/x-yaml", icon=":material/description:")
 
     with cd3:
         if st.session_state.logs:
-            st.button("🗑️ Clear Logs", on_click=clear_logs)
+            st.button("Clear Logs", icon=":material/delete_sweep:", on_click=clear_logs)
 
     active_provider = st.session_state.ai_provider
     active_ai_key = st.session_state.get(provider_key_map[active_provider], "")
     active_model = st.session_state.get(provider_model_map[active_provider]) or AI_PROVIDERS[active_provider]["default_model"]
 
     if st.session_state.logs and active_ai_key:
-        st.markdown(f"### 🤖 AI Helper ({active_provider})")
+        st.markdown(f"### :material/smart_toy: AI Helper ({active_provider})")
         ca1, ca2, ca3 = st.columns(3)
 
-        if ca1.button("🧐 Analyze Errors"):
+        if ca1.button("Analyze Errors", icon=":material/troubleshoot:"):
             with st.spinner("Thinking..."):
                 an, err = analyze_errors_with_ai("\n".join(st.session_state.logs), active_provider, active_ai_key, active_model)
                 if err:
-                    st.error(f"AI analysis failed: {err}")
+                    st.error(f"AI analysis failed: {err}", icon=":material/error:")
                 elif an:
                     st.markdown(an)
 
-        if ca2.button("✨ Auto-Fix"):
+        if ca2.button("Auto-Fix", icon=":material/auto_fix_high:"):
             if st.session_state.last_edited_file:
                 with st.spinner("Fixing..."):
                     fix, err = apply_ai_fixes(
                         st.session_state.last_edited_file, "\n".join(st.session_state.logs), active_provider, active_ai_key, active_model
                     )
                     if err:
-                        st.error(f"AI auto-fix failed: {err}")
+                        st.error(f"AI auto-fix failed: {err}", icon=":material/error:")
                     elif fix:
                         op = Path(st.session_state.last_edited_file)
                         cp = op.parent / (op.stem.replace("_edited", "") + "_corrected.yaml")
                         with open(cp, "w") as f:
                             f.write(fix)
                         st.session_state.corrected_file = str(cp)
-                        st.success("Fixed! Choose 'AI Corrected' above.")
+                        st.success("Fixed! Choose 'AI Corrected' above.", icon=":material/check_circle:")
                         st.rerun()
 
-        if ca3.button(f"📐 Check Style Guide ({st.session_state.style_guide_mode})"):
+        if ca3.button(f"Check Style Guide ({st.session_state.style_guide_mode})", icon=":material/rule:"):
             if st.session_state.last_edited_file:
                 with st.spinner("Checking against style guide..."):
                     p = Path(st.session_state.last_edited_file)
@@ -1358,7 +1359,7 @@ def main():
                     )
                     review, err = check_spec_against_style_guide(yaml_text, active_provider, active_ai_key, active_model, style_guide_text)
                     if err:
-                        st.error(f"Style guide check failed: {err}")
+                        st.error(f"Style guide check failed: {err}", icon=":material/error:")
                     elif review:
                         st.markdown(review)
 
@@ -1366,7 +1367,7 @@ def main():
         cp = Path(st.session_state.corrected_file)
         if cp.exists():
             with open(cp, "r") as f:
-                st.download_button("✨ Corrected YAML", f.read(), cp.name, "application/x-yaml")
+                st.download_button("Corrected YAML", f.read(), cp.name, "application/x-yaml", icon=":material/auto_fix_high:")
 
 
 if __name__ == "__main__":
