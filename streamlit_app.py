@@ -595,23 +595,37 @@ def delete_repo(repo_dir):
 # =============================================================================
 # File Ops
 # =============================================================================
+SPEC_EXTENSIONS = (".yaml", ".yml", ".json")
+
+
 def prepare_files(filename, paths, workspace, dependency_list, logger):
+    # BUG FIX: file discovery was hardcoded to ".yaml" only, so a JSON (or
+    # .yml) OpenAPI file would never be found here even if it showed up in
+    # the file picker. Now tries all supported extensions, in each search
+    # path, in order.
     source = None
-    main_c = Path(paths["specs"]) / f"{filename}.yaml"
-    if main_c.exists():
-        source = main_c
-    elif paths.get("secondary") and (Path(paths["secondary"]) / f"{filename}.yaml").exists():
-        source = Path(paths["secondary"]) / f"{filename}.yaml"
+    search_dirs = [Path(paths["specs"])]
+    if paths.get("secondary"):
+        search_dirs.append(Path(paths["secondary"]))
+    for d in search_dirs:
+        for ext in SPEC_EXTENSIONS:
+            candidate = d / f"{filename}{ext}"
+            if candidate.exists():
+                source = candidate
+                break
+        if source:
+            break
 
     if not source:
-        logger.error(f"❌ Source file '{filename}.yaml' not found.")
+        tried = ", ".join(f"{filename}{ext}" for ext in SPEC_EXTENSIONS)
+        logger.error(f"❌ Source file not found. Tried: {tried}")
         st.stop()
 
     dest_dir = Path(workspace)
     dest_dir.mkdir(parents=True, exist_ok=True)
     destination = dest_dir / source.name
     shutil.copy(source, destination)
-    logger.info(f"📂 Copied YAML to workspace: {destination.name}")
+    logger.info(f"📂 Copied {source.suffix.lstrip('.').upper()} spec to workspace: {destination.name}")
 
     for folder in dependency_list:
         clean = folder.strip()
@@ -1105,11 +1119,14 @@ def main():
     with c1:
         files = []
         if abs_spec.exists():
-            files.extend([f.stem for f in abs_spec.glob("*.yaml")])
+            for ext in SPEC_EXTENSIONS:
+                files.extend([f.stem for f in abs_spec.glob(f"*{ext}")])
         if "secondary" in paths and paths["secondary"].exists():
-            files.extend([f.stem for f in paths["secondary"].glob("*.yaml")])
+            for ext in SPEC_EXTENSIONS:
+                files.extend([f.stem for f in paths["secondary"].glob(f"*{ext}")])
         files = sorted(list(set(files)))
         selected_file = st.selectbox("Select File", files) if files else st.text_input("Filename", "audit")
+        st.caption("Looks for `.yaml`, `.yml`, or `.json` files under the configured Specs path(s).")
 
     with c2:
         default_version = "1.0" if mode_conf["id"] == "v1" else "stable"
