@@ -510,11 +510,27 @@ def git_clone_or_switch(repo_url, repo_dir, git_token, git_username, branch_name
     # directly from the remote, so checkout always finds it — this is what
     # actually makes "type any branch name and switch to it" work reliably,
     # not just for the branch that happened to be cloned first.
-    steps = [
-        ["git", "-C", str(repo_path), "remote", "set-url", "origin", auth_repo_url],
-        ["git", "-C", str(repo_path), "fetch", "--depth", "1", "origin", f"+{branch_name}:{branch_name}"],
-        ["git", "-C", str(repo_path), "checkout", branch_name],
-    ]
+    #
+    # SECOND BUG FIX: that forced refspec fetch fails with "refusing to fetch
+    # into branch ... checked out" whenever branch_name is ALREADY the
+    # checked-out branch (e.g. re-running on the same branch across runs) —
+    # git refuses to let a fetch silently rewrite the ref backing the current
+    # worktree. In that case there's nothing to check out, so just fetch to
+    # FETCH_HEAD (no destination ref) and fast-forward the worktree with
+    # `reset --hard`, which is exactly what a checked-out branch update needs.
+    current_branch, _ = get_current_git_branch(repo_path)
+    if current_branch == branch_name:
+        steps = [
+            ["git", "-C", str(repo_path), "remote", "set-url", "origin", auth_repo_url],
+            ["git", "-C", str(repo_path), "fetch", "--depth", "1", "origin", branch_name],
+            ["git", "-C", str(repo_path), "reset", "--hard", "FETCH_HEAD"],
+        ]
+    else:
+        steps = [
+            ["git", "-C", str(repo_path), "remote", "set-url", "origin", auth_repo_url],
+            ["git", "-C", str(repo_path), "fetch", "--depth", "1", "origin", f"+{branch_name}:{branch_name}"],
+            ["git", "-C", str(repo_path), "checkout", branch_name],
+        ]
     for step in steps:
         result = subprocess.run(step, capture_output=True, text=True, env=clean_env)
         if result.returncode != 0:
